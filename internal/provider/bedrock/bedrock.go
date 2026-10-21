@@ -44,6 +44,7 @@ type Converser interface {
 type Provider struct {
 	api    Converser
 	stream StreamAPI // nil = sem streaming real (o gateway simula)
+	invoke Invoker   // nil = sem embeddings
 }
 
 // New carrega as credenciais padrão da AWS.
@@ -57,7 +58,9 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("bedrock: carregando credenciais AWS: %w", err)
 	}
 	client := bedrockruntime.NewFromConfig(awsCfg)
-	return NewWithAPI(client, sdkStream{client}), nil
+	p := NewWithAPI(client, sdkStream{client})
+	p.invoke = client
+	return p, nil
 }
 
 // NewWithAPI injeta os clientes (testes). stream pode ser nil.
@@ -317,3 +320,6 @@ func nonEmpty(s string) string {
 	}
 	return s
 }
+
+// WithInvoker injeta o cliente de InvokeModel (embeddings) — testes.
+func (p *Provider) WithInvoker(i Invoker) *Provider { p.invoke = i; return p }

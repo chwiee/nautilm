@@ -35,6 +35,19 @@ models:
     model: qwen2.5:7b
     max_tokens: 2048
 
+  # Embeddings (RAG, memória semântica, router). NUNCA têm fallback:
+  # vetores de modelos diferentes não se comparam. Trocar o modelo de
+  # embedding = reindexar tudo no Valkey.
+  embed:
+    type: embedding
+    provider: bedrock
+    model: amazon.titan-embed-text-v2:0
+    dimensions: 1024          # Titan v2: 256, 512 ou 1024
+  embed-local:
+    type: embedding
+    provider: ollama
+    model: nomic-embed-text    # 768 dimensões
+
 auth:
   # Em ordem. No EKS: [kubernetes]. Laboratório/CLI: [tokens]. Dev local: [none].
   modes: [kubernetes, tokens]
@@ -45,10 +58,10 @@ auth:
 # Quem pode usar o quê. Chave = "namespace/serviceaccount" ou nome do token.
 agents:
   observability/kubets:
-    models: [smart, fast]
+    models: [smart, fast, embed]
   mq/midts:
-    models: [smart, fast]
+    models: [smart, fast, embed]
   ce-cli:
-    models: [fast]
+    models: [fast, embed]
   "*":                       # qualquer outro agente autenticado
-    models: [fast]
+    models: [fast, embed]

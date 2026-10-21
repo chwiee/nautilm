@@ -231,3 +231,26 @@ func (s *StringOrList) UnmarshalJSON(b []byte) error {
 	*s = many
 	return nil
 }
+
+// EmbeddingRequest é o corpo de POST /v1/embeddings.
+type EmbeddingRequest struct {
+	Model string       `json:"model"`
+	Input StringOrList `json:"input"` // um texto ou uma lista
+	// Dimensions pede vetores menores (Titan v2: 256, 512 ou 1024).
+	Dimensions *int   `json:"dimensions,omitempty"`
+	User       string `json:"user,omitempty"`
+}
+
+// EmbeddingResponse é a resposta de POST /v1/embeddings.
+type EmbeddingResponse struct {
+	Object string          `json:"object"` // "list"
+	Data   []EmbeddingData `json:"data"`
+	Model  string          `json:"model"`
+	Usage  *Usage          `json:"usage,omitempty"`
+}
+
+type EmbeddingData struct {
+	Object    string    `json:"object"` // "embedding"
+	Index     int       `json:"index"`
+	Embedding []float32 `json:"embedding"`
+}

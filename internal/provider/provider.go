@@ -51,6 +51,20 @@ type Streamer interface {
 	ChatStream(ctx context.Context, c Call, emit Emit) (*openai.Usage, error)
 }
 
+// EmbedCall é um pedido de embeddings já resolvido.
+type EmbedCall struct {
+	Model      string   // ID real no provedor
+	Input      []string // textos, na ordem
+	Dimensions int      // 0 = padrão do modelo
+	Header     http.Header
+}
+
+// Embedder é opcional: provider que sabe gerar embeddings.
+// Devolve um vetor por texto, NA MESMA ORDEM do Input, e o usage.
+type Embedder interface {
+	Embed(ctx context.Context, c EmbedCall) ([][]float32, *openai.Usage, error)
+}
+
 // Error é um erro com status HTTP. O gateway usa Status para decidir:
 //   - devolver ao agente (4xx: o pedido está errado, tentar outro modelo não ajuda);
 //   - tentar o fallback (429 e 5xx: problema do provedor).

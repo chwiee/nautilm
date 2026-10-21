@@ -57,6 +57,7 @@ Como o token é renovado pelo kubelet, releia o arquivo periodicamente.
 | Rota | O que faz |
 |---|---|
 | `POST /v1/chat/completions` | chat (com ou sem `stream`; tool calling) |
+| `POST /v1/embeddings` | embeddings (Titan v2 no Bedrock, `/embeddings` nos compatíveis com OpenAI); **sem fallback** |
 | `GET /v1/models` | apelidos que **este** agente pode usar |
 | `GET /metrics` | Prometheus: requests, tokens (input/output/cached), duração, fallbacks, rejeições |
 | `GET /healthz` | health |

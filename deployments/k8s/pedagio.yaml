@@ -43,12 +43,13 @@ data:
     models:
       smart: {provider: bedrock, model: anthropic.claude-sonnet-5-5, max_tokens: 4096, fallback: [fast]}
       fast:  {provider: bedrock, model: amazon.nova-lite-v1:0, max_tokens: 2048}
+      embed: {type: embedding, provider: bedrock, model: amazon.titan-embed-text-v2:0, dimensions: 1024}
     auth:
       modes: [kubernetes]
       audience: pedagio
     agents:
-      observability/kubets: {models: [smart, fast]}
-      "*": {models: [fast]}
+      observability/kubets: {models: [smart, fast, embed]}
+      "*": {models: [fast, embed]}
 ---
 apiVersion: apps/v1
 kind: Deployment

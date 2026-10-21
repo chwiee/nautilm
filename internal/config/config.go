@@ -41,8 +41,13 @@ type Provider struct {
 }
 
 type Model struct {
+	// Type: "chat" (padrão) ou "embedding". Um apelido de embedding só
+	// serve em /v1/embeddings e vice-versa.
+	Type     string `yaml:"type"`
 	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"` // ID real no provedor
+	// Dimensions padrão para embeddings (0 = padrão do modelo).
+	Dimensions int    `yaml:"dimensions"`
+	Model      string `yaml:"model"` // ID real no provedor
 	// MaxTokens padrão quando o agente não informa (controle de custo).
 	MaxTokens int `yaml:"max_tokens"`
 	// Fallback: apelidos tentados, em ordem, se este falhar com 429/5xx.
@@ -86,6 +91,12 @@ func Parse(b []byte) (*Config, error) {
 	if len(c.Auth.Modes) == 0 {
 		c.Auth.Modes = []string{"kubernetes"}
 	}
+	for alias, m := range c.Models {
+		if m.Type == "" {
+			m.Type = "chat"
+			c.Models[alias] = m
+		}
+	}
 	return &c, c.Validate()
 }
 
@@ -107,6 +118,16 @@ func (c *Config) Validate() error {
 		}
 	}
 	for alias, m := range c.Models {
+		switch m.Type {
+		case "chat", "embedding":
+		default:
+			errs = append(errs, fmt.Errorf("model %s: type %q desconhecido (use chat ou embedding)", alias, m.Type))
+		}
+		// Embedding NUNCA tem fallback: cada modelo gera vetores num espaço
+		// diferente. Misturar dois no mesmo índice estraga a busca em silêncio.
+		if m.Type == "embedding" && len(m.Fallback) > 0 {
+			errs = append(errs, fmt.Errorf("model %s: embedding não pode ter fallback (vetores de modelos diferentes não se misturam)", alias))
+		}
 		if _, ok := c.Providers[m.Provider]; !ok {
 			errs = append(errs, fmt.Errorf("model %s: provider %q não existe", alias, m.Provider))
 		}
@@ -119,6 +140,9 @@ func (c *Config) Validate() error {
 			}
 			if f == alias {
 				errs = append(errs, fmt.Errorf("model %s: fallback para si mesmo", alias))
+			}
+			if fm, ok := c.Models[f]; ok && fm.Type == "embedding" {
+				errs = append(errs, fmt.Errorf("model %s: fallback %q é de embedding", alias, f))
 			}
 		}
 	}

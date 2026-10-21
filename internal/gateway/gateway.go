@@ -47,6 +47,7 @@ func New(cfg *config.Config, providers map[string]provider.Provider, a auth.Auth
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", g.chat)
+	mux.HandleFunc("POST /v1/embeddings", g.embeddings)
 	mux.HandleFunc("GET /v1/models", g.models)
 	mux.Handle("GET /metrics", g.metrics)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
@@ -92,9 +93,14 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	// Agente pede APELIDO. ID cru de modelo é recusado de propósito: é isso
 	// que permite trocar o modelo sem mexer em nenhum agente.
 	allowed := g.cfg.Allowed(id.Agent)
-	if _, exists := g.cfg.Models[req.Model]; !exists {
+	m, exists := g.cfg.Models[req.Model]
+	if !exists {
 		g.reject(w, id, http.StatusNotFound, "unknown_model",
 			fmt.Sprintf("modelo %q não existe no pedagio; use um apelido: %s", req.Model, strings.Join(allowed, ", ")))
+		return
+	}
+	if m.Type == "embedding" {
+		g.reject(w, id, http.StatusBadRequest, "wrong_model_type", fmt.Sprintf("%q é um modelo de embedding; use /v1/embeddings", req.Model))
 		return
 	}
 	if !slices.Contains(allowed, req.Model) {

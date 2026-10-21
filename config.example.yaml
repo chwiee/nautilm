@@ -1,0 +1,54 @@
+# Exemplo de configuração do pedagio.
+# Copie para config.yaml (que está no .gitignore) e ajuste.
+# Segredos sempre via ${VARIAVEL}, nunca escritos aqui.
+
+listen: ":8080"
+
+# De onde vêm os modelos.
+providers:
+  bedrock:
+    type: bedrock
+    region: us-east-2        # a Região selecionada do seu projeto/conta
+  ollama:
+    type: openai             # qualquer API compatível com OpenAI (Ollama, vLLM, LiteLLM...)
+    base_url: http://localhost:11434/v1
+    timeout: 180s
+
+# Apelidos: é SÓ isto que os agentes conhecem.
+# Trocar o modelo de "smart" = mudar uma linha aqui, zero mudança nos agentes.
+models:
+  smart:
+    provider: bedrock
+    # Confira o ID exato no console do Bedrock (Model catalog) da sua Região.
+    # IDs com prefixo "us."/"global." são inference profiles cross-Region:
+    # em conta com SCP single-Region (nova experiência AWS) use o ID regional.
+    model: anthropic.claude-sonnet-5-5
+    max_tokens: 4096
+    fallback: [fast]         # se o Bedrock der 429/5xx, tenta "fast"
+  fast:
+    provider: bedrock
+    model: amazon.nova-lite-v1:0
+    max_tokens: 2048
+    fallback: [local]
+  local:
+    provider: ollama
+    model: qwen2.5:7b
+    max_tokens: 2048
+
+auth:
+  # Em ordem. No EKS: [kubernetes]. Laboratório/CLI: [tokens]. Dev local: [none].
+  modes: [kubernetes, tokens]
+  audience: pedagio          # audience do token projetado da ServiceAccount
+  tokens:
+    ce-cli: ${PEDAGIO_TOKEN_CE_CLI}
+
+# Quem pode usar o quê. Chave = "namespace/serviceaccount" ou nome do token.
+agents:
+  observability/kubets:
+    models: [smart, fast]
+  mq/midts:
+    models: [smart, fast]
+  ce-cli:
+    models: [fast]
+  "*":                       # qualquer outro agente autenticado
+    models: [fast]

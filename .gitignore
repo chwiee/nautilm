@@ -1,0 +1,27 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary
+*.test
+
+# Go coverage output
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Env
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+config.yaml

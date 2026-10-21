@@ -1,0 +1,110 @@
+# pedagio no EKS.
+# Pré-requisitos:
+#   1. Role IAM com bedrock:InvokeModel (e InvokeModelWithResponseStream) nos modelos usados.
+#   2. Pod Identity association: namespace llm-gateway, SA pedagio → essa role.
+#      aws eks create-pod-identity-association --cluster-name <cluster> \
+#        --namespace llm-gateway --service-account pedagio --role-arn <role-arn>
+# Os AGENTES não precisam de role IAM nenhuma.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-gateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pedagio
+  namespace: llm-gateway
+---
+# Permite ao pedagio criar TokenReviews (validar o token dos agentes).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pedagio-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: pedagio
+    namespace: llm-gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pedagio
+  namespace: llm-gateway
+data:
+  config.yaml: |
+    listen: ":8080"
+    providers:
+      bedrock: {type: bedrock, region: us-east-2}
+    models:
+      smart: {provider: bedrock, model: anthropic.claude-sonnet-5-5, max_tokens: 4096, fallback: [fast]}
+      fast:  {provider: bedrock, model: amazon.nova-lite-v1:0, max_tokens: 2048}
+    auth:
+      modes: [kubernetes]
+      audience: pedagio
+    agents:
+      observability/kubets: {models: [smart, fast]}
+      "*": {models: [fast]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pedagio
+  namespace: llm-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: pedagio}
+  template:
+    metadata:
+      labels: {app: pedagio}
+    spec:
+      serviceAccountName: pedagio
+      terminationGracePeriodSeconds: 70   # > 60s do shutdown gracioso
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: pedagio
+          image: ghcr.io/chwiee/pedagio:0.1.0
+          args: ["-config", "/etc/pedagio/config.yaml"]
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/pedagio}
+      volumes:
+        - name: config
+          configMap: {name: pedagio}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pedagio
+  namespace: llm-gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: pedagio}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pedagio
+  namespace: llm-gateway
+spec:
+  selector: {app: pedagio}
+  ports: [{name: http, port: 80, targetPort: http}]

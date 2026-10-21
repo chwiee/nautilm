@@ -87,7 +87,7 @@ func TestTraducaoVolta(t *testing.T) {
 		StopReason: types.StopReasonToolUse,
 		Usage:      &types.TokenUsage{InputTokens: aws.Int32(50), OutputTokens: aws.Int32(7), TotalTokens: aws.Int32(57), CacheReadInputTokens: aws.Int32(40)},
 	}}
-	p := NewWithAPI(api)
+	p := NewWithAPI(api, nil)
 	resp, err := p.Chat(context.Background(), provider.Call{Model: "m", Request: parse(t, `{"model":"smart","messages":[{"role":"user","content":"oi"}]}`), DefaultMaxTokens: 256})
 	if err != nil {
 		t.Fatal(err)

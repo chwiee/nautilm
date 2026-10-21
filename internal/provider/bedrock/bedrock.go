@@ -5,7 +5,7 @@
 // SÓ o pedagio precisa de permissão no Bedrock — esse é o objetivo:
 //
 //	bedrock:InvokeModel                   (Converse)
-//	bedrock:InvokeModelWithResponseStream (quando o ConverseStream entrar)
+//	bedrock:InvokeModelWithResponseStream (ConverseStream, quando o agente pede stream)
 //
 // Por que Converse e não InvokeModel? Um formato só de mensagens e de tool
 // calling para todos os modelos (Claude, Nova, Llama...). Trocar de modelo é
@@ -41,7 +41,10 @@ type Converser interface {
 	Converse(ctx context.Context, in *bedrockruntime.ConverseInput, opts ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 }
 
-type Provider struct{ api Converser }
+type Provider struct {
+	api    Converser
+	stream StreamAPI // nil = sem streaming real (o gateway simula)
+}
 
 // New carrega as credenciais padrão da AWS.
 func New(ctx context.Context, cfg Config) (*Provider, error) {
@@ -53,11 +56,14 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: carregando credenciais AWS: %w", err)
 	}
-	return NewWithAPI(bedrockruntime.NewFromConfig(awsCfg)), nil
+	client := bedrockruntime.NewFromConfig(awsCfg)
+	return NewWithAPI(client, sdkStream{client}), nil
 }
 
-// NewWithAPI injeta o cliente (testes).
-func NewWithAPI(api Converser) *Provider { return &Provider{api: api} }
+// NewWithAPI injeta os clientes (testes). stream pode ser nil.
+func NewWithAPI(api Converser, stream StreamAPI) *Provider {
+	return &Provider{api: api, stream: stream}
+}
 
 func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatResponse, error) {
 	in, err := buildInput(c)

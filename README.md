@@ -65,6 +65,28 @@ Erros seguem o formato da OpenAI (`{"error":{"message","type","code"}}`):
 401 sem credencial, 403 apelido não permitido, 404 apelido inexistente,
 429/5xx repassados do provedor depois de esgotar o fallback.
 
+## Streaming
+
+Com `"stream": true` o pedagio repassa os tokens **conforme o modelo gera**
+(SSE no formato OpenAI): `ConverseStream` no Bedrock, repasse do SSE nos
+servidores compatíveis com OpenAI.
+
+- **Fallback só antes do 1º byte.** Se o modelo falhar ao abrir (429, 5xx,
+  conexão), o pedagio tenta o próximo apelido sem o agente perceber. Depois
+  que o primeiro chunk saiu, o status 200 já foi enviado: um erro vira um
+  evento `data: {"error": {...}}` e o stream termina sem `[DONE]`.
+- **Usage:** o pedagio sempre conta os tokens (pede `include_usage` ao
+  upstream); o chunk de usage só vai ao agente se ele pediu
+  `stream_options.include_usage`.
+- **Campos extras** do upstream (ex: `reasoning_content`) passam intactos;
+  só `id` e `model` (o apelido) são trocados.
+- `/metrics` ganha `pedagio_time_to_first_token_seconds` — a latência que o
+  usuário sente no chat.
+- O `timeout` do provider `openai` vale para a resposta **inteira**, inclusive
+  o stream: ajuste para respostas longas em CPU.
+- Atrás de nginx/ingress, o pedagio manda `X-Accel-Buffering: no` para o
+  proxy não segurar o stream em buffer.
+
 ## Mirante
 
 Hoje: coloque o mirante (modo sidecar) na frente — o agente aponta para

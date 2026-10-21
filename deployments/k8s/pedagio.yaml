@@ -1,6 +1,6 @@
 # pedagio no EKS.
 # Pré-requisitos:
-#   1. Role IAM com bedrock:InvokeModel (e InvokeModelWithResponseStream) nos modelos usados.
+#   1. Role IAM com bedrock:InvokeModel E bedrock:InvokeModelWithResponseStream (streaming) nos modelos usados.
 #   2. Pod Identity association: namespace llm-gateway, SA pedagio → essa role.
 #      aws eks create-pod-identity-association --cluster-name <cluster> \
 #        --namespace llm-gateway --service-account pedagio --role-arn <role-arn>

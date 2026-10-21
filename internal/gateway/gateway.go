@@ -104,11 +104,32 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream := req.Stream
-	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-	req.Stream = false
-
-	resp, used, err := g.callChain(r.Context(), id, &req, rawMap, r.Header)
+	req.Stream = false // providers recebem sempre false; o modo vai pela interface
+	callID := "chatcmpl-" + randomID()
 	trace := traceID(r.Header.Get("traceparent"))
+
+	if stream {
+		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+		res := g.streamChain(r.Context(), w, id, &req, rawMap, r.Header, callID, includeUsage)
+		in, out, cached := usage(res.usage)
+		attrs := []any{"agent", id.Agent, "auth", id.Method, "alias", req.Model, "served_by", res.used.alias,
+			"provider", res.used.provider, "model", res.used.model, "tokens_in", in, "tokens_out", out,
+			"tokens_cached", cached, "tools", len(req.Tools), "stream", true, "stream_mode", res.mode,
+			"trace_id", trace, "ttft_ms", res.ttft.Milliseconds(), "duration_ms", time.Since(start).Milliseconds()}
+		if res.err != nil {
+			perr := asProviderError(res.err)
+			g.log.Warn("stream falhou", append(attrs, "status", perr.Status, "code", perr.Code, "error", perr.Message, "mid_stream", res.started)...)
+			if !res.started {
+				// Nada foi enviado ainda: dá para responder um erro HTTP normal.
+				writeError(w, perr.Status, perr.Code, perr.Message)
+			}
+			return
+		}
+		g.log.Info("chat", attrs...)
+		return
+	}
+
+	resp, used, err := g.callChain(r.Context(), id, &req, rawMap, r.Header, callID)
 	if err != nil {
 		perr := asProviderError(err)
 		g.log.Warn("chamada falhou", "agent", id.Agent, "alias", req.Model, "status", perr.Status,
@@ -120,31 +141,28 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	// Para o agente, o modelo é sempre o apelido que ele pediu. O modelo real
 	// vai em headers (útil para debug e para o mirante).
 	resp.Model = req.Model
-	if resp.ID == "" {
-		resp.ID = "chatcmpl-" + randomID()
-	}
-	w.Header().Set("X-Pedagio-Alias", used.alias)
-	w.Header().Set("X-Pedagio-Provider", used.provider)
-	w.Header().Set("X-Pedagio-Model", used.model)
+	resp.ID = callID
+	setServedHeaders(w, used)
 
 	in, out, cached := usage(resp.Usage)
 	g.log.Info("chat", "agent", id.Agent, "auth", id.Method, "alias", req.Model, "served_by", used.alias,
 		"provider", used.provider, "model", used.model, "tokens_in", in, "tokens_out", out, "tokens_cached", cached,
-		"tools", len(req.Tools), "stream", stream, "trace_id", trace, "duration_ms", time.Since(start).Milliseconds())
-
-	if stream {
-		writeSSE(w, resp, includeUsage)
-		return
-	}
+		"tools", len(req.Tools), "stream", false, "trace_id", trace, "duration_ms", time.Since(start).Milliseconds())
 	writeJSON(w, http.StatusOK, resp)
 }
 
 type served struct{ alias, provider, model string }
 
+func setServedHeaders(w http.ResponseWriter, s served) {
+	w.Header().Set("X-Pedagio-Alias", s.alias)
+	w.Header().Set("X-Pedagio-Provider", s.provider)
+	w.Header().Set("X-Pedagio-Model", s.model)
+}
+
 // callChain tenta o apelido e depois os fallbacks. Só passa para o próximo
 // em erro "retryable" (429/5xx): erro 4xx é culpa do pedido, e outro modelo
 // daria o mesmo erro.
-func (g *Gateway) callChain(ctx context.Context, id auth.Identity, req *openai.ChatRequest, raw map[string]any, h http.Header) (*openai.ChatResponse, served, error) {
+func (g *Gateway) callChain(ctx context.Context, id auth.Identity, req *openai.ChatRequest, raw map[string]any, h http.Header, callID string) (*openai.ChatResponse, served, error) {
 	chain := g.cfg.Chain(req.Model)
 	var lastErr error
 	for i, alias := range chain {
@@ -155,7 +173,7 @@ func (g *Gateway) callChain(ctx context.Context, id auth.Identity, req *openai.C
 		}
 		p := g.providers[m.Provider]
 		t0 := time.Now()
-		resp, err := p.Chat(ctx, provider.Call{Model: m.Model, Request: req, Raw: raw, DefaultMaxTokens: m.MaxTokens, Header: h})
+		resp, err := p.Chat(ctx, provider.Call{Model: m.Model, Request: req, Raw: raw, DefaultMaxTokens: m.MaxTokens, Header: h, ID: callID, Alias: req.Model})
 		status := http.StatusOK
 		if err != nil {
 			status = asProviderError(err).Status
@@ -196,51 +214,6 @@ func (g *Gateway) reject(w http.ResponseWriter, id auth.Identity, status int, re
 	g.metrics.Rejected(id.Agent, reason)
 	g.log.Info("rejeitado", "agent", id.Agent, "status", status, "reason", reason, "message", msg)
 	writeError(w, status, reason, msg)
-}
-
-// writeSSE entrega a resposta pronta como stream. Ainda é "stream simulado":
-// o pedagio espera a resposta inteira e manda em poucos eventos. Funciona
-// com qualquer cliente que exige stream; o tempo até o 1º token só melhora
-// quando o ConverseStream entrar (ver docs/ROADMAP.md).
-func writeSSE(w http.ResponseWriter, resp *openai.ChatResponse, includeUsage bool) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	send := func(c openai.ChatChunk) {
-		b, _ := json.Marshal(c)
-		fmt.Fprintf(w, "data: %s\n\n", b)
-	}
-	base := openai.ChatChunk{ID: resp.ID, Object: "chat.completion.chunk", Created: resp.Created, Model: resp.Model}
-
-	for _, ch := range resp.Choices {
-		c := base
-		d := openai.Delta{Role: "assistant"}
-		if ch.Message.Content != nil {
-			d.Content = *ch.Message.Content
-		}
-		for i, tc := range ch.Message.ToolCalls {
-			idx := i
-			tc.Index = &idx
-			d.ToolCalls = append(d.ToolCalls, tc)
-		}
-		c.Choices = []openai.ChunkChoice{{Index: ch.Index, Delta: d}}
-		send(c)
-
-		fin := base
-		reason := ch.FinishReason
-		fin.Choices = []openai.ChunkChoice{{Index: ch.Index, Delta: openai.Delta{}, FinishReason: &reason}}
-		send(fin)
-	}
-	if includeUsage && resp.Usage != nil {
-		u := base
-		u.Choices = []openai.ChunkChoice{}
-		u.Usage = resp.Usage
-		send(u)
-	}
-	io.WriteString(w, "data: [DONE]\n\n")
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

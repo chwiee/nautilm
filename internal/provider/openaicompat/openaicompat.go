@@ -42,14 +42,22 @@ func New(cfg Config) *Provider {
 	return &Provider{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
 }
 
-func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatResponse, error) {
+// send monta o corpo (cópia do JSON do agente com model/stream trocados) e
+// faz o POST. Status >= 300 já vira *provider.Error aqui, ANTES de qualquer
+// byte ir para o cliente — é isso que permite fallback também no streaming.
+func (p *Provider) send(ctx context.Context, c provider.Call, stream bool) (*http.Response, error) {
 	body := make(map[string]any, len(c.Raw)+1)
 	for k, v := range c.Raw {
 		body[k] = v
 	}
 	body["model"] = c.Model
-	body["stream"] = false
+	body["stream"] = stream
 	delete(body, "stream_options")
+	if stream {
+		// Sempre pedimos usage ao upstream (para as métricas). Se o agente
+		// também pediu, o gateway devolve; senão fica só com a gente.
+		body["stream_options"] = map[string]any{"include_usage": true}
+	}
 	if c.Request.EffectiveMaxTokens() == 0 && c.DefaultMaxTokens > 0 {
 		body["max_tokens"] = c.DefaultMaxTokens
 	}
@@ -63,6 +71,9 @@ func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatRespo
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
 	if p.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 	}
@@ -74,13 +85,23 @@ func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatRespo
 	if err != nil {
 		return nil, provider.Errorf(http.StatusBadGateway, "upstream_unreachable", "%v", err)
 	}
+	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return nil, provider.Errorf(resp.StatusCode, "upstream_error", "%s", truncate(string(raw), 500))
+	}
+	return resp, nil
+}
+
+func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatResponse, error) {
+	resp, err := p.send(ctx, c, false)
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, provider.Errorf(http.StatusBadGateway, "upstream_read", "%v", err)
-	}
-	if resp.StatusCode >= 300 {
-		return nil, provider.Errorf(resp.StatusCode, "upstream_error", "%s", truncate(string(raw), 500))
 	}
 	var out openai.ChatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {

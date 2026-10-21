@@ -21,7 +21,7 @@ os agentes. Queremos:
 |---|---|---|---|
 | Licença / linguagem | Apache-2.0, Go | Apache-2.0, Go (controller) + Envoy (C++) | nosso, Go stdlib + AWS SDK |
 | API para os agentes | OpenAI-compatible | OpenAI-compatible | OpenAI-compatible |
-| Bedrock | Converse, tool calling, streaming, embeddings, prompt caching | Converse + InvokeModel (Claude), embeddings Titan | Converse, tool calling (streaming real ainda não) |
+| Bedrock | Converse, tool calling, streaming, embeddings, prompt caching | Converse + InvokeModel (Claude), embeddings Titan | Converse + ConverseStream, tool calling |
 | Credencial AWS | cadeia padrão (IRSA documentado) | cadeia padrão (IRSA e Pod Identity) | cadeia padrão (Pod Identity, IRSA) |
 | Identidade do agente | virtual keys (segredo por agente) | JWT/OIDC via SecurityPolicy do Envoy | **TokenReview da ServiceAccount** (sem segredo) |
 | Cota / orçamento | sim (virtual keys, budgets) | rate limit por tokens | não ainda (roadmap) |

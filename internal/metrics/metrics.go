@@ -4,6 +4,7 @@
 //	pedagio_requests_total{agent,alias,model,status}
 //	pedagio_tokens_total{agent,alias,model,kind="input|output|cached"}
 //	pedagio_request_duration_seconds_sum / _count{agent,alias,model}
+//	pedagio_time_to_first_token_seconds_sum / _count{agent,alias,model}
 //	pedagio_fallbacks_total{agent,from,to}
 package metrics
 
@@ -41,6 +42,16 @@ func (r *Registry) Call(agent, alias, model string, status int, d time.Duration,
 	if cached > 0 {
 		r.counters["pedagio_tokens_total"+labels("agent", agent, "alias", alias, "model", model, "kind", "cached")] += float64(cached)
 	}
+}
+
+// FirstToken registra o tempo até o 1º chunk chegar ao agente (só streaming).
+// É a latência que o usuário sente no chat.
+func (r *Registry) FirstToken(agent, alias, model string, d time.Duration) {
+	l := labels("agent", agent, "alias", alias, "model", model)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["pedagio_time_to_first_token_seconds_sum"+l] += d.Seconds()
+	r.counters["pedagio_time_to_first_token_seconds_count"+l]++
 }
 
 // Fallback registra que o apelido "from" falhou e "to" foi tentado.

@@ -25,11 +25,30 @@ type Call struct {
 	DefaultMaxTokens int
 	// Header traz cabeçalhos que vale propagar (ex: traceparent).
 	Header http.Header
+	// ID e Alias vão em todo chunk de streaming: o agente vê um id estável
+	// e o apelido que pediu, nunca o ID real do modelo.
+	ID    string
+	Alias string
 }
 
 // Provider é um backend de LLM.
 type Provider interface {
 	Chat(ctx context.Context, c Call) (*openai.ChatResponse, error)
+}
+
+// Emit entrega um chunk ao cliente. O valor é serializado em JSON e vai num
+// evento SSE "data: ...". Erro = o cliente desistiu: pare de ler o upstream.
+type Emit func(chunk any) error
+
+// Streamer é opcional: provider que sabe fazer streaming de verdade.
+// Quem não implementa cai no "stream simulado" do gateway.
+//
+// Regras do contrato:
+//   - não emitir o chunk de usage (o gateway emite, se o cliente pediu);
+//   - devolver o usage final para as métricas;
+//   - erro ANTES do primeiro Emit ainda permite fallback; depois, não.
+type Streamer interface {
+	ChatStream(ctx context.Context, c Call, emit Emit) (*openai.Usage, error)
 }
 
 // Error é um erro com status HTTP. O gateway usa Status para decidir:

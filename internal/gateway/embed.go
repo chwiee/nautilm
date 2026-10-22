@@ -56,6 +56,10 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("agente %q não pode usar %q; permitidos: %s", id.Agent, req.Model, strings.Join(allowed, ", ")))
 		return
 	}
+	lim := g.limits(id)
+	if !g.checkQuota(w, r, id, lim) {
+		return
+	}
 	emb, ok := g.providers[m.Provider].(provider.Embedder)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "unsupported", fmt.Sprintf("provider %q não gera embeddings", m.Provider))
@@ -72,6 +76,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 		status = asProviderError(err).Status
 	}
 	in, _, _ := usage(u)
+	g.spendQuota(r.Context(), id, lim, in)
 	g.metrics.Call(id.Agent, req.Model, m.Model, status, time.Since(start), in, 0, 0)
 	if err != nil {
 		perr := asProviderError(err)

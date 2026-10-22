@@ -27,6 +27,7 @@ import (
 	"github.com/chwiee/pedagio/internal/mask"
 	"github.com/chwiee/pedagio/internal/metrics"
 	"github.com/chwiee/pedagio/internal/provider"
+	"github.com/chwiee/pedagio/internal/quota"
 	"github.com/chwiee/pedagio/pkg/openai"
 )
 
@@ -39,12 +40,18 @@ type Gateway struct {
 	metrics   *metrics.Registry
 	log       *slog.Logger
 	masker    *mask.Masker
+	quota     *quota.Quota
 }
 
 func New(cfg *config.Config, providers map[string]provider.Provider, a auth.Authenticator, m *metrics.Registry, log *slog.Logger) *Gateway {
 	// Config já foi validada (Validate chama mask.New), então aqui não falha.
 	mk, _ := mask.New(cfg.Mascarar)
-	return &Gateway{cfg: cfg, providers: providers, auth: a, metrics: m, log: log, masker: mk}
+	g := &Gateway{cfg: cfg, providers: providers, auth: a, metrics: m, log: log, masker: mk}
+	if !cfg.Cotas.Desligado {
+		// Memória por padrão; o main troca para o Valkey se houver valkey_url.
+		g.quota = quota.New(quota.NewMemory())
+	}
+	return g
 }
 
 // Handler monta as rotas.
@@ -120,6 +127,10 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("agente %q não pode usar %q; permitidos: %s", id.Agent, req.Model, strings.Join(allowed, ", ")))
 		return
 	}
+	lim := g.limits(id)
+	if !g.checkQuota(w, r, id, lim) {
+		return
+	}
 
 	stream := req.Stream
 	req.Stream = false // providers recebem sempre false; o modo vai pela interface
@@ -130,6 +141,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 		res := g.streamChain(r.Context(), w, id, &req, rawMap, r.Header, callID, includeUsage)
 		in, out, cached := usage(res.usage)
+		g.spendQuota(r.Context(), id, lim, in+out)
 		attrs := []any{"agent", id.Agent, "auth", id.Method, "alias", req.Model, "served_by", res.used.alias,
 			"provider", res.used.provider, "model", res.used.model, "tokens_in", in, "tokens_out", out,
 			"tokens_cached", cached, "tools", len(req.Tools), "stream", true, "stream_mode", res.mode,
@@ -163,6 +175,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	setServedHeaders(w, used)
 
 	in, out, cached := usage(resp.Usage)
+	g.spendQuota(r.Context(), id, lim, in+out)
 	g.log.Info("chat", "agent", id.Agent, "auth", id.Method, "alias", req.Model, "served_by", used.alias,
 		"provider", used.provider, "model", used.model, "tokens_in", in, "tokens_out", out, "tokens_cached", cached,
 		"tools", len(req.Tools), "stream", false, "trace_id", trace, "duration_ms", time.Since(start).Milliseconds())

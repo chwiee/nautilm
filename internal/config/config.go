@@ -32,6 +32,24 @@ type Config struct {
 	// Mascarar tira dados sensíveis (CPF, token, senha...) antes de qualquer
 	// modelo. Ausente = LIGADO com todas as regras embutidas.
 	Mascarar *mask.Config `yaml:"mascarar"`
+	// Cotas de tokens por agente. Ausente = LIGADO com os padrões abaixo.
+	Cotas Cotas `yaml:"cotas"`
+}
+
+// Padrões de cota: folgados para uso normal, mas seguram um agente em loop.
+const (
+	DefaultTokensPorMinuto = 200_000
+	DefaultTokensPorDia    = 10_000_000
+)
+
+type Cotas struct {
+	Desligado bool `yaml:"desligado"`
+	// Limites padrão de TODO agente (0 = usa o padrão do pedagio, -1 = sem limite).
+	TokensPorMinuto int64 `yaml:"tokens_por_minuto"`
+	TokensPorDia    int64 `yaml:"tokens_por_dia"`
+	// ValkeyURL: vazio = contador em memória (1 réplica). Com várias
+	// réplicas, use o Valkey para todas verem o mesmo total.
+	ValkeyURL string `yaml:"valkey_url"`
 }
 
 type Provider struct {
@@ -70,6 +88,33 @@ type Auth struct {
 
 type Agent struct {
 	Models []string `yaml:"models"` // apelidos permitidos; "*" = todos
+	// Cota própria do agente (0 = usa cotas.*, -1 = sem limite).
+	TokensPorMinuto int64 `yaml:"tokens_por_minuto"`
+	TokensPorDia    int64 `yaml:"tokens_por_dia"`
+}
+
+// Limits devolve a cota efetiva da identidade: a do agente, senão a do "*",
+// senão a global, senão o padrão. Valor <= 0 no resultado = sem limite.
+func (c *Config) Limits(identity string) (perMinute, perDay int64) {
+	if c.Cotas.Desligado {
+		return 0, 0
+	}
+	pick := func(agent, star, global, def int64) int64 {
+		for _, v := range []int64{agent, star, global} {
+			if v != 0 {
+				return max(v, 0) // -1 vira 0 = sem limite
+			}
+		}
+		return def
+	}
+	// Mesma regra de "agents": o "*" só vale para quem NÃO está listado.
+	a, listed := c.Agents[identity]
+	var s Agent
+	if !listed {
+		s = c.Agents["*"]
+	}
+	return pick(a.TokensPorMinuto, s.TokensPorMinuto, c.Cotas.TokensPorMinuto, DefaultTokensPorMinuto),
+		pick(a.TokensPorDia, s.TokensPorDia, c.Cotas.TokensPorDia, DefaultTokensPorDia)
 }
 
 // Load lê o arquivo, expande ${VAR} e valida.

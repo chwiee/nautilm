@@ -19,10 +19,12 @@ import (
 	"github.com/chwiee/pedagio/internal/auth"
 	"github.com/chwiee/pedagio/internal/config"
 	"github.com/chwiee/pedagio/internal/gateway"
+	"github.com/chwiee/pedagio/internal/mask"
 	"github.com/chwiee/pedagio/internal/metrics"
 	"github.com/chwiee/pedagio/internal/provider"
 	"github.com/chwiee/pedagio/internal/provider/bedrock"
 	"github.com/chwiee/pedagio/internal/provider/openaicompat"
+	"github.com/chwiee/pedagio/internal/quota"
 )
 
 func main() {
@@ -54,6 +56,26 @@ func run(path string, log *slog.Logger) error {
 	}
 
 	gw := gateway.New(cfg, providers, authn, metrics.New(), log)
+	quotaStore := "memória"
+	if cfg.Cotas.Desligado {
+		quotaStore = "desligado"
+	} else if cfg.Cotas.ValkeyURL != "" {
+		vk, err := quota.NewValkey(cfg.Cotas.ValkeyURL)
+		if err != nil {
+			return fmt.Errorf("cotas.valkey_url: %w", err)
+		}
+		// Valkey fora na subida NÃO impede o pedagio de subir: as cotas
+		// deixam passar até ele voltar (fail-open), e o log avisa.
+		if err := vk.Ping(ctx); err != nil {
+			log.Warn("cotas: Valkey indisponível agora; cotas deixam passar até ele voltar", "error", err)
+		}
+		gw.UseQuotaCounter(vk)
+		quotaStore = "valkey"
+	}
+	pm, pd := cfg.Limits("*")
+	mk, _ := mask.New(cfg.Mascarar)
+	log.Info("proteções", "mascarar", mk.Enabled(), "cotas", quotaStore,
+		"cota_padrao_minuto", pm, "cota_padrao_dia", pd)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           gw.Handler(),

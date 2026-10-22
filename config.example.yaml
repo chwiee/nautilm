@@ -56,12 +56,34 @@ auth:
     ce-cli: ${PEDAGIO_TOKEN_CE_CLI}
 
 # Quem pode usar o quê. Chave = "namespace/serviceaccount" ou nome do token.
+# tokens_por_minuto / tokens_por_dia: cota própria (0 ou ausente = usa
+# "cotas", -1 = sem limite).
 agents:
   observability/kubets:
     models: [smart, fast, embed]
   mq/midts:
     models: [smart, fast, embed]
+    tokens_por_dia: 20000000   # agente mais usado: cota maior
   ce-cli:
     models: [fast, embed]
+    tokens_por_minuto: 50000   # CLI de humano: mais apertado
   "*":                       # qualquer outro agente autenticado
     models: [fast, embed]
+
+# ── Proteções: LIGADAS por padrão. Só escreva se quiser mudar algo. ──
+
+# Mascaramento de dados sensíveis ANTES de qualquer modelo (mensagens,
+# resultados e argumentos de tool, embeddings). Regras embutidas:
+#   chave_privada, jwt, aws_key, bearer, segredo, cpf, cnpj, cartao, email
+mascarar:
+  desligar: []                 # ex: [email] se o agente PRECISA ver e-mails
+  extra: []                    # ex: [{nome: matricula, regex: 'MAT-\d{6}'}]
+  # desligado: true            # desliga tudo (não recomendado)
+
+# Cota de tokens (entrada + saída) por agente. Estourou → 429 + Retry-After,
+# sem fallback. Padrão: 200 mil/minuto e 10 milhões/dia por agente.
+cotas:
+  tokens_por_minuto: 200000
+  tokens_por_dia: 10000000
+  valkey_url: ${VALKEY_URL}    # vazio = memória (1 réplica); com várias réplicas use o Valkey
+  # desligado: true

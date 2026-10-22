@@ -59,12 +59,56 @@ Como o token é renovado pelo kubelet, releia o arquivo periodicamente.
 | `POST /v1/chat/completions` | chat (com ou sem `stream`; tool calling) |
 | `POST /v1/embeddings` | embeddings (Titan v2 no Bedrock, `/embeddings` nos compatíveis com OpenAI); **sem fallback** |
 | `GET /v1/models` | apelidos que **este** agente pode usar |
-| `GET /metrics` | Prometheus: requests, tokens (input/output/cached), duração, fallbacks, rejeições |
+| `GET /metrics` | Prometheus: requests, tokens (input/output/cached), duração, fallbacks, rejeições (inclusive cota), mascaramentos |
 | `GET /healthz` | health |
 
 Erros seguem o formato da OpenAI (`{"error":{"message","type","code"}}`):
-401 sem credencial, 403 apelido não permitido, 404 apelido inexistente,
+401 sem credencial, 403 apelido não permitido, 404 apelido inexistente, 429 cota do agente estourada,
 429/5xx repassados do provedor depois de esgotar o fallback.
+
+## Proteções (ligadas por padrão)
+
+Nenhuma precisa de config para funcionar. O bloco no YAML serve só para
+**ajustar** (veja [config.example.yaml](config.example.yaml)).
+
+### Mascaramento de dados sensíveis
+
+Antes de qualquer modelo, o pedagio troca dados sensíveis por marcadores:
+`[CPF]`, `[CNPJ]`, `[CARTAO]` (só número que passa no Luhn), `[EMAIL]`,
+`[JWT]`, `[AWS_KEY]`, `Bearer [TOKEN]`, `[CHAVE_PRIVADA]`, e o valor de
+`senha=`, `DB_PASSWORD=`, `"token":"..."` etc. vira `[SEGREDO]` (a chave fica,
+para o modelo entender o contexto).
+
+- Vale para **todas** as mensagens, inclusive resultado de tool e argumentos
+  de tool_call (é ali que log com segredo costuma entrar), e para embeddings.
+- Definição de tools e campos de estrutura (`role`, `tool_call_id`...) não são tocados.
+- O agente sabe pelo header `X-Pedagio-Masked: cpf=1,segredo=2`; o log e a
+  métrica `pedagio_masked_total{agent,rule}` guardam só o **nome** da regra, nunca o valor.
+- Ajuste: `mascarar: {desligar: [email], extra: [{nome: matricula, regex: 'MAT-\d{6}'}]}`.
+  Regra com nome errado derruba a subida com mensagem clara.
+
+Trade-off: é regex, não um classificador. Pega formatos conhecidos com
+poucos falsos positivos (os testes garantem que `CrashLoopBackOff`, códigos
+`AMQ2058` e números de pedido passam intactos), mas não reconhece um segredo
+sem formato ("a senha do banco é batata"). Para isso existe o Bedrock
+Guardrails (PII), que dá para ligar no provider depois, com custo por chamada.
+
+### Cotas por agente
+
+Tokens de entrada + saída, por agente, em duas janelas fixas: **200 mil por
+minuto** e **10 milhões por dia** (padrão). Estourou → `429` com
+`Retry-After` e **sem fallback** (outro modelo gastaria do mesmo orçamento).
+
+- Cota própria por agente em `agents.<id>.tokens_por_minuto/tokens_por_dia`
+  (`-1` = sem limite). Padrão de todos em `cotas:`.
+- Contador em memória (1 réplica) ou no Valkey (`cotas.valkey_url`: as
+  réplicas somam no mesmo contador com `INCRBY`, atômico).
+- **Fail-open:** Valkey fora = as cotas deixam passar e o log avisa. A cota
+  protege custo; não pode derrubar os agentes.
+- O custo só é conhecido depois da resposta, então a última chamada pode
+  passar um pouco do limite (sem tokenizer por modelo, de propósito).
+- Header `X-Pedagio-Quota-Day-Remaining` e métrica
+  `pedagio_rejected_total{reason="quota_minute|quota_day"}`.
 
 ## Streaming
 

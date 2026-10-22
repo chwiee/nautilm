@@ -59,7 +59,7 @@ Como o token é renovado pelo kubelet, releia o arquivo periodicamente.
 | `POST /v1/chat/completions` | chat (com ou sem `stream`; tool calling) |
 | `POST /v1/embeddings` | embeddings (Titan v2 no Bedrock, `/embeddings` nos compatíveis com OpenAI); **sem fallback** |
 | `GET /v1/models` | apelidos que **este** agente pode usar |
-| `GET /metrics` | Prometheus: requests, tokens (input/output/cached), duração, fallbacks, rejeições (inclusive cota), mascaramentos |
+| `GET /metrics` | Prometheus: requests, tokens (input/output/cached), custo estimado, duração, fallbacks, rejeições (inclusive cota), mascaramentos |
 | `GET /healthz` | health |
 
 Erros seguem o formato da OpenAI (`{"error":{"message","type","code"}}`):
@@ -109,6 +109,30 @@ minuto** e **10 milhões por dia** (padrão). Estourou → `429` com
   passar um pouco do limite (sem tokenizer por modelo, de propósito).
 - Header `X-Pedagio-Quota-Day-Remaining` e métrica
   `pedagio_rejected_total{reason="quota_minute|quota_day"}`.
+
+### Custo e painel do Grafana
+
+Cada apelido pode ter preço (USD por **milhão** de tokens, da tabela do provedor):
+
+```yaml
+models:
+  smart: {provider: bedrock, model: ..., preco: {entrada: 3.00, saida: 15.00}}
+```
+
+O pedagio soma `pedagio_cost_usd_total{agent,alias,model}` a cada chamada
+(inclusive embeddings). Preço por apelido, e não um preço único no painel,
+porque `smart` e `fast` costumam diferir 10×+ e trocar de modelo já é mudar
+essa mesma linha. Sem `preco` = custo 0 (ex: Ollama). É **estimativa**: a
+fatura oficial continua no Cost Explorer (tokens em cache, descontos e
+arredondamentos ficam de fora).
+
+[deployments/grafana/pedagio.json](deployments/grafana/pedagio.json) é o
+painel pronto (fonte de dados como variável, serve em qualquer Grafana):
+custo no período, tokens, % de erro, **custo por agente**, tokens/min por
+agente (compare com a cota), latência e TTFT por apelido, bloqueios por
+motivo (cota, permissão), mascaramentos por regra, fallbacks e uma tabela
+agente × apelido × modelo. No compose do
+[plataforma-agentes](https://github.com/chwiee/plataforma-agentes) ele já sobe provisionado.
 
 ## Streaming
 

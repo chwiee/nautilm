@@ -103,27 +103,31 @@
       "targets": [{"refId": "A", "legendFormat": "{{alias}}", "expr": "sum by (alias) (rate(pedagio_time_to_first_token_seconds_sum{agent=~\"$agent\"}[$__rate_interval])) / sum by (alias) (rate(pedagio_time_to_first_token_seconds_count{agent=~\"$agent\"}[$__rate_interval]))"}]
     },
     {
-      "id": 9, "type": "timeseries", "title": "Bloqueios por motivo (cota, permissão, auth)",
-      "description": "quota_minute / quota_day = cota estourada (429). forbidden_model = apelido não permitido. unauthenticated = sem credencial.",
+      "id": 9, "type": "bargauge", "title": "Bloqueios por motivo (desde a subida do pedagio)",
+      "description": "Total desde a última subida (contagem exata: increase() perderia eventos raros que criam a série já com valor). quota_minute / quota_day = cota estourada (429). forbidden_model = apelido não permitido. unauthenticated = sem credencial.",
       "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "targets": [{"refId": "A", "legendFormat": "{{reason}} ({{agent}})", "expr": "sum by (reason, agent) (increase(pedagio_rejected_total{agent=~\"$agent|\"}[$__interval]))"}]
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "orange"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{reason}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (reason, agent) (pedagio_rejected_total{agent=~\"$agent|\"}))"}]
     },
     {
-      "id": 10, "type": "timeseries", "title": "Dados sensíveis mascarados, por regra",
+      "id": 10, "type": "bargauge", "title": "Dados sensíveis mascarados (desde a subida)",
       "description": "Quantas vezes cada regra tirou um dado antes do modelo. Agente com muito 'segredo' está mandando log com senha: vale olhar a tool.",
       "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "targets": [{"refId": "A", "legendFormat": "{{rule}} ({{agent}})", "expr": "sum by (rule, agent) (increase(pedagio_masked_total{agent=~\"$agent\"}[$__interval]))"}]
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{rule}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (rule, agent) (pedagio_masked_total{agent=~\"$agent\"}))"}]
     },
     {
-      "id": 11, "type": "timeseries", "title": "Fallbacks (modelo principal falhou)",
+      "id": 11, "type": "bargauge", "title": "Fallbacks (desde a subida)",
+      "description": "O modelo principal falhou (429/5xx) e o pedagio usou o próximo apelido.",
       "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60}}, "overrides": []},
-      "targets": [{"refId": "A", "legendFormat": "{{from}} → {{to}}", "expr": "sum by (from, to) (increase(pedagio_fallbacks_total{agent=~\"$agent\"}[$__interval]))"}]
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "red"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{from}} → {{to}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (from, to, agent) (pedagio_fallbacks_total{agent=~\"$agent\"}))"}]
     },
     {
       "id": 12, "type": "table", "title": "Detalhe no período: agente × apelido × modelo",

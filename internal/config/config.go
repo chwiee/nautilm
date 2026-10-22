@@ -16,6 +16,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/chwiee/pedagio/internal/mask"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -28,6 +29,9 @@ type Config struct {
 	// (ex: "observability/kubets" para ServiceAccount, ou o nome do token).
 	// A chave "*" vale para qualquer agente autenticado que não esteja listado.
 	Agents map[string]Agent `yaml:"agents"`
+	// Mascarar tira dados sensíveis (CPF, token, senha...) antes de qualquer
+	// modelo. Ausente = LIGADO com todas as regras embutidas.
+	Mascarar *mask.Config `yaml:"mascarar"`
 }
 
 type Provider struct {
@@ -150,6 +154,9 @@ func (c *Config) Validate() error {
 		if !slices.Contains([]string{"kubernetes", "tokens", "none"}, mode) {
 			errs = append(errs, fmt.Errorf("auth: modo %q desconhecido", mode))
 		}
+	}
+	if _, err := mask.New(c.Mascarar); err != nil {
+		errs = append(errs, err)
 	}
 	for agent, a := range c.Agents {
 		for _, m := range a.Models {

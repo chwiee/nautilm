@@ -24,6 +24,7 @@ import (
 
 	"github.com/chwiee/pedagio/internal/auth"
 	"github.com/chwiee/pedagio/internal/config"
+	"github.com/chwiee/pedagio/internal/mask"
 	"github.com/chwiee/pedagio/internal/metrics"
 	"github.com/chwiee/pedagio/internal/provider"
 	"github.com/chwiee/pedagio/pkg/openai"
@@ -37,10 +38,13 @@ type Gateway struct {
 	auth      auth.Authenticator
 	metrics   *metrics.Registry
 	log       *slog.Logger
+	masker    *mask.Masker
 }
 
 func New(cfg *config.Config, providers map[string]provider.Provider, a auth.Authenticator, m *metrics.Registry, log *slog.Logger) *Gateway {
-	return &Gateway{cfg: cfg, providers: providers, auth: a, metrics: m, log: log}
+	// Config já foi validada (Validate chama mask.New), então aqui não falha.
+	mk, _ := mask.New(cfg.Mascarar)
+	return &Gateway{cfg: cfg, providers: providers, auth: a, metrics: m, log: log, masker: mk}
 }
 
 // Handler monta as rotas.
@@ -85,6 +89,14 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.Unmarshal(raw, &rawMap)
+	// Mascarar ANTES de tudo: daqui para frente (provider, log, fallback)
+	// ninguém mais vê o dado sensível.
+	masked, err := g.maskChat(rawMap, &req)
+	if err != nil {
+		g.reject(w, id, http.StatusBadRequest, "mask", err.Error())
+		return
+	}
+	g.reportMasked(w, id, masked)
 	if len(req.Messages) == 0 {
 		g.reject(w, id, http.StatusBadRequest, "messages", "messages vazio")
 		return

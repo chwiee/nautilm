@@ -40,6 +40,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 		g.reject(w, id, http.StatusBadRequest, "input", fmt.Sprintf("input precisa ter de 1 a %d textos", maxEmbedInputs))
 		return
 	}
+	g.reportMasked(w, id, g.maskEmbed(req.Input))
 
 	m, exists := g.cfg.Models[req.Model]
 	allowed := g.cfg.Allowed(id.Agent)

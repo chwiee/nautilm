@@ -6,6 +6,7 @@
 //	pedagio_request_duration_seconds_sum / _count{agent,alias,model}
 //	pedagio_time_to_first_token_seconds_sum / _count{agent,alias,model}
 //	pedagio_fallbacks_total{agent,from,to}
+//	pedagio_masked_total{agent,rule}
 package metrics
 
 import (
@@ -108,4 +109,12 @@ func labels(kv ...string) string {
 	}
 	b.WriteByte('}')
 	return b.String()
+}
+
+// Masked conta quantos dados sensíveis cada regra tirou, por agente.
+// Útil para achar o agente que vive mandando segredo no prompt.
+func (r *Registry) Masked(agent, rule string, n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["pedagio_masked_total"+labels("agent", agent, "rule", rule)] += float64(n)
 }

@@ -68,6 +68,7 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 		}
 		in, out, cached := usage(u)
 		g.metrics.Call(id.Agent, alias, m.Model, status, time.Since(t0), in, out, cached)
+		g.metrics.Cost(id.Agent, alias, m.Model, m.Preco.Custo(in, out))
 		if sw.started {
 			g.metrics.FirstToken(id.Agent, alias, m.Model, res.ttft)
 		}

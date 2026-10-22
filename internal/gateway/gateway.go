@@ -214,6 +214,7 @@ func (g *Gateway) callChain(ctx context.Context, id auth.Identity, req *openai.C
 			in, out, cached = usage(resp.Usage)
 		}
 		g.metrics.Call(id.Agent, alias, m.Model, status, time.Since(t0), in, out, cached)
+		g.metrics.Cost(id.Agent, alias, m.Model, m.Preco.Custo(in, out))
 		if err == nil {
 			return resp, served{alias: alias, provider: m.Provider, model: m.Model}, nil
 		}

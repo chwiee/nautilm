@@ -25,11 +25,15 @@ models:
     model: anthropic.claude-sonnet-5-5
     max_tokens: 4096
     fallback: [fast]         # se o Bedrock der 429/5xx, tenta "fast"
+    # USD por milhão de tokens: VALORES DE EXEMPLO, confira a tabela atual em
+    # https://aws.amazon.com/bedrock/pricing/ para o modelo e a sua Região.
+    preco: {entrada: 3.00, saida: 15.00}
   fast:
     provider: bedrock
     model: amazon.nova-lite-v1:0
     max_tokens: 2048
     fallback: [local]
+    preco: {entrada: 0.06, saida: 0.24}
   local:
     provider: ollama
     model: qwen2.5:7b
@@ -43,6 +47,7 @@ models:
     provider: bedrock
     model: amazon.titan-embed-text-v2:0
     dimensions: 1024          # Titan v2: 256, 512 ou 1024
+    preco: {entrada: 0.02}
   embed-local:
     type: embedding
     provider: ollama

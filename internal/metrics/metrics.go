@@ -7,6 +7,7 @@
 //	pedagio_time_to_first_token_seconds_sum / _count{agent,alias,model}
 //	pedagio_fallbacks_total{agent,from,to}
 //	pedagio_masked_total{agent,rule}
+//	pedagio_cost_usd_total{agent,alias,model}
 package metrics
 
 import (
@@ -117,4 +118,15 @@ func (r *Registry) Masked(agent, rule string, n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.counters["pedagio_masked_total"+labels("agent", agent, "rule", rule)] += float64(n)
+}
+
+// Cost soma o custo estimado em USD (tokens × preço do apelido na config).
+// É a métrica do painel de custo: por agente, apelido e modelo.
+func (r *Registry) Cost(agent, alias, model string, usd float64) {
+	if usd <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["pedagio_cost_usd_total"+labels("agent", agent, "alias", alias, "model", model)] += usd
 }

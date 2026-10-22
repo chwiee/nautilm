@@ -1,0 +1,149 @@
+{
+  "title": "pedagio — custo e uso por agente",
+  "uid": "pedagio",
+  "description": "Custo estimado, tokens, latência e proteções (cotas, mascaramento) do LLM Gateway. Fonte: GET /metrics do pedagio.",
+  "tags": ["pedagio", "llm", "custo"],
+  "editable": true,
+  "schemaVersion": 41,
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "agent",
+        "label": "Agente",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": {"query": "label_values(pedagio_requests_total, agent)", "refId": "agent"},
+        "definition": "label_values(pedagio_requests_total, agent)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"},
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Custo estimado no período (USD)",
+      "description": "Tokens × preço de cada apelido (models.<apelido>.preco no config do pedagio). Apelido sem preço conta 0.",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2, "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "sum(increase(pedagio_cost_usd_total{agent=~\"$agent\"}[$__range])) or vector(0)", "instant": true}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Tokens no período",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "none", "graphMode": "none", "textMode": "value_and_name"},
+      "targets": [
+        {"refId": "A", "legendFormat": "entrada", "expr": "sum(increase(pedagio_tokens_total{agent=~\"$agent\",kind=\"input\"}[$__range])) or vector(0)", "instant": true},
+        {"refId": "B", "legendFormat": "saída", "expr": "sum(increase(pedagio_tokens_total{agent=~\"$agent\",kind=\"output\"}[$__range])) or vector(0)", "instant": true}
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Chamadas a modelos",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "none", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "sum(increase(pedagio_requests_total{agent=~\"$agent\"}[$__range])) or vector(0)", "instant": true}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Chamadas com erro",
+      "description": "Status diferente de 200 vindo do provedor (depois do fallback, quando houver).",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "(sum(increase(pedagio_requests_total{agent=~\"$agent\",status!=\"200\"}[$__range])) or vector(0)) / clamp_min(sum(increase(pedagio_requests_total{agent=~\"$agent\"}[$__range])), 1)", "instant": true}]
+    },
+    {
+      "id": 5, "type": "bargauge", "title": "Custo por agente no período (USD)",
+      "description": "Quem está gastando. Combine com a cota de cada agente (agents.<id>.tokens_por_dia).",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2, "min": 0, "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{agent}}", "expr": "sort_desc(sum by (agent) (increase(pedagio_cost_usd_total{agent=~\"$agent\"}[$__range])))", "instant": true}]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Tokens por minuto, por agente",
+      "description": "Compare com a cota por minuto (padrão 200 mil). Um agente em loop aparece aqui antes de aparecer na fatura.",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{agent}}", "expr": "sum by (agent) (rate(pedagio_tokens_total{agent=~\"$agent\",kind=~\"input|output\"}[$__rate_interval])) * 60"}]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Latência média por apelido",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{alias}}", "expr": "sum by (alias) (rate(pedagio_request_duration_seconds_sum{agent=~\"$agent\"}[$__rate_interval])) / sum by (alias) (rate(pedagio_request_duration_seconds_count{agent=~\"$agent\"}[$__rate_interval]))"}]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Tempo até o 1º token (streaming)",
+      "description": "A latência que o usuário sente no chat.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{alias}}", "expr": "sum by (alias) (rate(pedagio_time_to_first_token_seconds_sum{agent=~\"$agent\"}[$__rate_interval])) / sum by (alias) (rate(pedagio_time_to_first_token_seconds_count{agent=~\"$agent\"}[$__rate_interval]))"}]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Bloqueios por motivo (cota, permissão, auth)",
+      "description": "quota_minute / quota_day = cota estourada (429). forbidden_model = apelido não permitido. unauthenticated = sem credencial.",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{reason}} ({{agent}})", "expr": "sum by (reason, agent) (increase(pedagio_rejected_total{agent=~\"$agent|\"}[$__interval]))"}]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Dados sensíveis mascarados, por regra",
+      "description": "Quantas vezes cada regra tirou um dado antes do modelo. Agente com muito 'segredo' está mandando log com senha: vale olhar a tool.",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{rule}} ({{agent}})", "expr": "sum by (rule, agent) (increase(pedagio_masked_total{agent=~\"$agent\"}[$__interval]))"}]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Fallbacks (modelo principal falhou)",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60}}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{from}} → {{to}}", "expr": "sum by (from, to) (increase(pedagio_fallbacks_total{agent=~\"$agent\"}[$__interval]))"}]
+    },
+    {
+      "id": 12, "type": "table", "title": "Detalhe no período: agente × apelido × modelo",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "Value #A"}, "properties": [{"id": "displayName", "value": "Custo (USD)"}, {"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "Value #B"}, "properties": [{"id": "displayName", "value": "Tokens"}, {"id": "unit", "value": "short"}, {"id": "decimals", "value": 0}]},
+        {"matcher": {"id": "byName", "options": "Value #C"}, "properties": [{"id": "displayName", "value": "Chamadas"}, {"id": "decimals", "value": 0}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "Custo (USD)", "desc": true}]},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}, "renameByName": {"agent": "Agente", "alias": "Apelido", "model": "Modelo"}}}
+      ],
+      "targets": [
+        {"refId": "A", "format": "table", "instant": true, "expr": "sum by (agent, alias, model) (increase(pedagio_cost_usd_total{agent=~\"$agent\"}[$__range]))"},
+        {"refId": "B", "format": "table", "instant": true, "expr": "sum by (agent, alias, model) (increase(pedagio_tokens_total{agent=~\"$agent\",kind=~\"input|output\"}[$__range]))"},
+        {"refId": "C", "format": "table", "instant": true, "expr": "sum by (agent, alias, model) (increase(pedagio_requests_total{agent=~\"$agent\"}[$__range]))"}
+      ]
+    }
+  ]
+}

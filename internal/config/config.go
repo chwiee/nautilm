@@ -74,6 +74,20 @@ type Model struct {
 	MaxTokens int `yaml:"max_tokens"`
 	// Fallback: apelidos tentados, em ordem, se este falhar com 429/5xx.
 	Fallback []string `yaml:"fallback"`
+	// Preco em USD por MILHÃO de tokens (tabela do provedor). Alimenta
+	// pedagio_cost_usd_total e o painel de custo. Ausente = custo 0
+	// (ex: Ollama local).
+	Preco Preco `yaml:"preco"`
+}
+
+type Preco struct {
+	Entrada float64 `yaml:"entrada"`
+	Saida   float64 `yaml:"saida"`
+}
+
+// Custo em USD de uma chamada.
+func (p Preco) Custo(in, out int) float64 {
+	return (float64(in)*p.Entrada + float64(out)*p.Saida) / 1e6
 }
 
 type Auth struct {

@@ -78,6 +78,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	in, _, _ := usage(u)
 	g.spendQuota(r.Context(), id, lim, in)
 	g.metrics.Call(id.Agent, req.Model, m.Model, status, time.Since(start), in, 0, 0)
+	g.metrics.Cost(id.Agent, req.Model, m.Model, m.Preco.Custo(in, 0))
 	if err != nil {
 		perr := asProviderError(err)
 		g.log.Warn("embeddings falhou", "agent", id.Agent, "alias", req.Model, "status", perr.Status, "error", perr.Message)

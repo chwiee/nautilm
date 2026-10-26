@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -81,5 +82,21 @@ func TestLimitsConfig(t *testing.T) {
 	cfg.Quotas.Disabled = true
 	if pm, pd := cfg.Limits("someone"); pm != 0 || pd != 0 {
 		t.Error("disabled = no limit")
+	}
+}
+
+// A provider daily quota reaches the agent as its own error, distinct from
+// nautilm's quota_day, with the OpenAI rate-limit type.
+func TestProviderDailyQuotaReachesTheAgent(t *testing.T) {
+	daily := provider.Errorf(429, "provider_quota_day", "the AWS account reached the daily token limit of model big-model")
+	env := setupCfg(t, quotaConfig, map[string]provider.Provider{"a": &fake{err: daily}, "b": &fake{err: daily}})
+	r := post(t, env.srv, "tok-k8s", fmt.Sprintf(hello, "smart"))
+	var out struct {
+		Error struct{ Type, Code, Message string } `json:"error"`
+	}
+	json.NewDecoder(r.Body).Decode(&out)
+	if r.StatusCode != 429 || out.Error.Code != "provider_quota_day" || out.Error.Type != "rate_limit_error" ||
+		!strings.Contains(out.Error.Message, "AWS account") {
+		t.Fatalf("status %d error %+v", r.StatusCode, out.Error)
 	}
 }

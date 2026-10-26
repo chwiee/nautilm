@@ -102,7 +102,7 @@ func TestStreamErrors(t *testing.T) {
 	req := parse(t, `{"model":"smart","messages":[{"role":"user","content":"hi"}]}`)
 	noop := func(any) error { return nil }
 
-	// Erro ao abrir: vira *provider.Error retryable (gateway pode fazer fallback).
+	// Error when opening: becomes a retryable *provider.Error (the gateway may fall back).
 	p := NewWithAPI(nil, &fakeStream{open: &smithy.GenericAPIError{Code: "ThrottlingException"}})
 	_, err := p.ChatStream(context.Background(), provider.Call{Model: "m", Request: req}, noop)
 	var pe *provider.Error

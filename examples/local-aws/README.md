@@ -63,3 +63,34 @@ Achado para melhorar: cada chamada gasta em média **0,42 s** tentando o Bedrock
 (o SDK da AWS faz 2 retries) antes do fallback. Com quota **diária** zerada,
 insistir a cada chamada é desperdício: vale pausar o modelo por alguns minutos
 quando o erro diz "per day".
+
+## Atualização: erro claro de quota da conta (26/10/2026)
+
+A pedido, sem pausa automática: quando a quota diária da **conta AWS** acaba,
+o agente recebe um erro próprio, diferente da cota do nautilm. Os apelidos
+`cheap` e `compare` ficaram **sem fallback** neste exemplo para o erro aparecer:
+
+```json
+HTTP 429
+{"error": {"type": "rate_limit_error", "code": "provider_quota_day",
+  "message": "the AWS account reached the daily token limit of model google.gemma-3-4b-it on Amazon Bedrock. This is a provider account limit, not a nautilm quota: it resets the next day, or ask AWS to raise it (Service Quotas / Support case). AWS said: Too many tokens per day, please wait before trying again."}}
+```
+
+O SDK da AWS não repete mais essa chamada: **0,24 s** em vez de ~0,42 s.
+
+### Quais quotas pedir à AWS
+
+Na tela do Service Quotas aparecem dezenas de quotas do Bedrock. Para este
+teste só importam estas (região **US East (Ohio)**):
+
+| Para | Nome no console | Código | Sugerido |
+|---|---|---|---|
+| Gemma 3 4B (`cheap`) | On-demand model inference tokens per minute for Gemma 3 4B | `L-73FB8466` | 100.000 |
+| Gemma 3 4B (`cheap`) | On-demand model inference requests per minute for Gemma 3 4B | `L-3056DF33` | 10 |
+| Nova Lite (`compare`) | Model invocation max tokens per day for Amazon Nova Lite | `L-45E0AD92` | 1.000.000 |
+
+Ignore as **Cross-region** (o projeto de região única não pode usar), **batch**,
+**custom** e **provisioned**. As três são **não ajustáveis** no Service Quotas
+(o botão "Request increase" fica desabilitado): abra pelo **Support Center** →
+Create case → **Service limit increase** → Bedrock → US East (Ohio), citando
+os códigos.

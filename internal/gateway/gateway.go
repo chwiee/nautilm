@@ -365,7 +365,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	typ := "invalid_request_error"
-	if status >= 500 {
+	switch {
+	case status == http.StatusTooManyRequests:
+		// OpenAI clients use this type to back off. The code tells WHICH
+		// limit: quota_minute / quota_day (nautilm) or provider_quota_day
+		// and ThrottlingException (the provider account).
+		typ = "rate_limit_error"
+	case status >= 500:
 		typ = "api_error"
 	}
 	writeJSON(w, status, openai.ErrorResponse{Error: openai.ErrorBody{Message: msg, Type: typ, Code: code}})

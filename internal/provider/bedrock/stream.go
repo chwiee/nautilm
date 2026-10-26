@@ -61,7 +61,7 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 		InferenceConfig: in.InferenceConfig, ToolConfig: in.ToolConfig,
 	})
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapError(err, c.Model)
 	}
 	defer events.Close()
 
@@ -115,7 +115,7 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 		}
 	}
 	if err := events.Err(); err != nil {
-		return usage, mapError(err)
+		return usage, mapError(err, c.Model)
 	}
 	return usage, nil
 }

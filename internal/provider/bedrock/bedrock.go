@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -49,7 +50,14 @@ type Provider struct {
 
 // New loads the default AWS credentials.
 func New(ctx context.Context, cfg Config) (*Provider, error) {
-	var opts []func(*config.LoadOptions) error
+	opts := []func(*config.LoadOptions) error{
+		config.WithRetryer(func() aws.Retryer {
+			return retry.NewStandard(func(o *retry.StandardOptions) {
+				// Checked first: a daily quota is never retried.
+				o.Retryables = append([]retry.IsErrorRetryable{retry.IsErrorRetryableFunc(noRetryOnDailyQuota)}, o.Retryables...)
+			})
+		}),
+	}
 	if cfg.Region != "" {
 		opts = append(opts, config.WithRegion(cfg.Region))
 	}
@@ -75,7 +83,7 @@ func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatRespo
 	}
 	out, err := p.api.Converse(ctx, in)
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapError(err, c.Model)
 	}
 	return parseOutput(c.Model, out)
 }
@@ -278,13 +286,22 @@ func finishReason(r types.StopReason) string {
 
 // mapError turns AWS errors into HTTP statuses so the gateway can decide
 // between returning to the agent or trying the fallback.
-func mapError(err error) error {
+func mapError(err error, model string) error {
 	var api smithy.APIError
 	if !errors.As(err, &api) {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return provider.Errorf(http.StatusGatewayTimeout, "timeout", "Bedrock did not answer in time")
 		}
 		return provider.Errorf(http.StatusBadGateway, "upstream_error", "%v", err)
+	}
+	if isDailyQuota(api) {
+		// The AWS ACCOUNT ran out of its daily quota for this model. It is
+		// not a nautilm quota (those answer "quota_day"), and retrying in a
+		// few seconds does not help: it only comes back the next day or
+		// after AWS raises the quota.
+		return provider.Errorf(http.StatusTooManyRequests, CodeProviderQuotaDay,
+			"the AWS account reached the daily token limit of model %s on Amazon Bedrock. This is a provider account limit, not a nautilm quota: it resets the next day, or ask AWS to raise it (Service Quotas / Support case). AWS said: %s",
+			model, api.ErrorMessage())
 	}
 	status := http.StatusBadGateway
 	switch api.ErrorCode() {
@@ -302,6 +319,28 @@ func mapError(err error) error {
 		status = http.StatusBadGateway
 	}
 	return provider.Errorf(status, api.ErrorCode(), "%s", api.ErrorMessage())
+}
+
+// CodeProviderQuotaDay is the error code for "the provider account ran out
+// of its daily quota for this model". Distinct from nautilm's own
+// "quota_day", so an agent (and whoever reads the logs) knows who to call.
+const CodeProviderQuotaDay = "provider_quota_day"
+
+// isDailyQuota tells whether a Bedrock error is the account's DAILY quota
+// ("Too many tokens per day"), as opposed to a per-minute throttle.
+func isDailyQuota(api smithy.APIError) bool {
+	return api.ErrorCode() == "ThrottlingException" && strings.Contains(strings.ToLower(api.ErrorMessage()), "per day")
+}
+
+// noRetryOnDailyQuota stops the SDK from retrying a daily-quota error: the
+// default retryer retries throttling 2 more times with backoff (~0.4 s lost
+// per call in the 2026-10-26 test), and a daily quota will not come back.
+func noRetryOnDailyQuota(err error) aws.Ternary {
+	var api smithy.APIError
+	if errors.As(err, &api) && isDailyQuota(api) {
+		return aws.FalseTernary
+	}
+	return aws.UnknownTernary
 }
 
 // argsDoc turns the JSON arguments string into a generic value. The SDK

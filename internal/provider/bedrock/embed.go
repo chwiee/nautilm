@@ -48,7 +48,7 @@ func (p *Provider) Embed(ctx context.Context, c provider.EmbedCall) ([][]float32
 			ContentType: aws.String("application/json"), Accept: aws.String("application/json"),
 		})
 		if err != nil {
-			return nil, nil, mapError(err)
+			return nil, nil, mapError(err, c.Model)
 		}
 		var res struct {
 			Embedding           []float32 `json:"embedding"`

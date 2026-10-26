@@ -188,7 +188,20 @@ Tokens de entrada + saída por agente, em janelas fixas: **200 mil por minuto** 
 | `GET /healthz` | health |
 
 Erros no formato da OpenAI: 401 sem credencial, 403 apelido não permitido,
-404 apelido inexistente, 429 cota estourada, 429/5xx do provedor depois do fallback.
+404 apelido inexistente, 429 limite atingido, 429/5xx do provedor depois do fallback.
+
+Os 429 têm `type: rate_limit_error` e o `code` diz **de quem** é o limite:
+
+| `code` | Limite de quem | Volta quando |
+|---|---|---|
+| `quota_minute` / `quota_day` | **nautilm** (cota do agente no config) | virada do minuto / meia-noite UTC (`Retry-After`) |
+| `provider_quota_day` | **conta no provedor** (ex: quota diária do modelo na conta AWS) | no dia seguinte ou quando a AWS aumentar a quota |
+| `ThrottlingException` | provedor, por minuto | em segundos |
+
+No `provider_quota_day` o nautilm **não insiste**: o SDK da AWS não repete a
+chamada (a quota diária não volta em segundos) e a mensagem diz o modelo e
+que o limite é da conta, não do nautilm. Com `fallback` no apelido, o próximo
+modelo é tentado normalmente; sem fallback, o agente recebe o erro.
 
 O config é lido em **modo estrito**: chave desconhecida (erro de digitação ou
 chave antiga do pedagio, como `cotas:`) impede a subida com a mensagem dizendo

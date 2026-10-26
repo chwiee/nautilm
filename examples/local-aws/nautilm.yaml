@@ -13,10 +13,12 @@ providers:
 
 models:
   # Cheapest model with ON_DEMAND in us-east-2 (AWS price list 2026-10-23).
-  cheap:   {provider: bedrock-us-east-2, model: google.gemma-3-4b-it, max_tokens: 500, fallback: [local]}
+  # No fallback: when the AWS account quota runs out, the agent gets the
+  # provider_quota_day error instead of a silent answer from the local model.
+  cheap:   {provider: bedrock-us-east-2, model: google.gemma-3-4b-it, max_tokens: 500}
   # Second model, to compare the price change.
-  compare: {provider: bedrock-us-east-2, model: amazon.nova-lite-v1:0, max_tokens: 500, fallback: [local]}
-  # Local fallback (free): keeps the agents working when Bedrock refuses.
+  compare: {provider: bedrock-us-east-2, model: amazon.nova-lite-v1:0, max_tokens: 500}
+  # Local model (free), available as an explicit alias.
   local:   {provider: ollama-local, model: qwen2.5:7b, max_tokens: 500}
 
 # Real Bedrock prices, us-east-2, regional on-demand (AWS price list 2026-10-23).

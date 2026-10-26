@@ -3,6 +3,8 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -111,9 +113,37 @@ func TestInboundTranslation(t *testing.T) {
 func TestMapError(t *testing.T) {
 	cases := map[string]int{"ThrottlingException": 429, "ValidationException": 400, "AccessDeniedException": 502}
 	for code, want := range cases {
-		err := mapError(&smithy.GenericAPIError{Code: code, Message: "x"})
+		err := mapError(&smithy.GenericAPIError{Code: code, Message: "x"}, "m")
 		if got := err.(*provider.Error).Status; got != want {
 			t.Errorf("%s → %d, want %d", code, got, want)
 		}
+	}
+}
+
+// The AWS account daily quota is a provider limit, not nautilm's: own code,
+// a message that says so, and the SDK must not retry it.
+func TestDailyQuotaIsAProviderError(t *testing.T) {
+	daily := &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Too many tokens per day, please wait before trying again."}
+	err := mapError(daily, "google.gemma-3-4b-it")
+	var pe *provider.Error
+	if !errors.As(err, &pe) || pe.Status != 429 || pe.Code != CodeProviderQuotaDay {
+		t.Fatalf("daily quota: %v", err)
+	}
+	for _, want := range []string{"AWS account", "google.gemma-3-4b-it", "not a nautilm quota", "Too many tokens per day"} {
+		if !strings.Contains(pe.Message, want) {
+			t.Errorf("message must contain %q: %s", want, pe.Message)
+		}
+	}
+	if noRetryOnDailyQuota(daily) != aws.FalseTernary {
+		t.Error("a daily quota must not be retried by the SDK")
+	}
+
+	// A per-minute throttle is still a normal 429 that the SDK may retry.
+	minute := &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Too many requests, please wait before trying again."}
+	if err := mapError(minute, "m"); !errors.As(err, &pe) || pe.Code != "ThrottlingException" {
+		t.Errorf("per-minute throttle: %v", err)
+	}
+	if noRetryOnDailyQuota(minute) != aws.UnknownTernary {
+		t.Error("a per-minute throttle keeps the default retry behavior")
 	}
 }

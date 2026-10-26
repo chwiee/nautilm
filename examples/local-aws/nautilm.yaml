@@ -1,0 +1,52 @@
+# nautilm locally against the REAL Bedrock (us-east-2), with the local Ollama
+# as fallback. Used by examples/agents. See examples/local-aws/README.md.
+listen: ":18090"
+
+providers:
+  bedrock-us-east-2:
+    type: bedrock
+    region: us-east-2            # the project's single Region
+  ollama-local:
+    type: openai
+    base_url: http://localhost:11434/v1
+    timeout: 300s
+
+models:
+  # Cheapest model with ON_DEMAND in us-east-2 (AWS price list 2026-10-23).
+  cheap:   {provider: bedrock-us-east-2, model: google.gemma-3-4b-it, max_tokens: 500, fallback: [local]}
+  # Second model, to compare the price change.
+  compare: {provider: bedrock-us-east-2, model: amazon.nova-lite-v1:0, max_tokens: 500, fallback: [local]}
+  # Local fallback (free): keeps the agents working when Bedrock refuses.
+  local:   {provider: ollama-local, model: qwen2.5:7b, max_tokens: 500}
+
+# Real Bedrock prices, us-east-2, regional on-demand (AWS price list 2026-10-23).
+pricing:
+  - {provider: bedrock-us-east-2, model: google.gemma-3-4b-it, input: 0.04, output: 0.08, effective_from: 2026-10-01}
+  - {provider: bedrock-us-east-2, model: amazon.nova-lite-v1:0, input: 0.06, output: 0.24, cache_read: 0.015, effective_from: 2026-10-01}
+  - {provider: ollama-local, model: "*", free: true}
+strict_pricing: true
+
+auth:
+  modes: [tokens]
+  tokens:
+    k8s: ${NAUTILM_TOKEN_K8S}
+    mid: ${NAUTILM_TOKEN_MID}
+    marcia: ${NAUTILM_TOKEN_MARCIA}
+    claudia: ${NAUTILM_TOKEN_CLAUDIA}
+
+agents:
+  k8s:     {models: [cheap, compare], team: ce, cost_center: CC-1001}
+  mid:     {models: [cheap, compare], team: middleware, cost_center: CC-1002}
+  marcia:  {models: [cheap], team: finance, cost_center: CC-2040}
+  claudia: {models: [cheap], team: support, cost_center: CC-3100}
+
+# ~100k tokens for the whole test: 25k per agent per day, plus a per-minute
+# limit to also see the minute block.
+quotas:
+  tokens_per_minute: 8000
+  tokens_per_day: 25000
+
+dashboard:
+  token: ${NAUTILM_DASHBOARD_TOKEN}
+
+valkey_url: redis://localhost:16392/1   # Valkey of the plataforma-agentes compose, DB 1 (keeps this test apart from the compose ledger)

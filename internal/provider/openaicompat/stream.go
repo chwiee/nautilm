@@ -7,16 +7,16 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// ChatStream repassa o SSE do upstream chunk a chunk.
+// ChatStream forwards the upstream SSE chunk by chunk.
 //
-// Cada chunk é lido como mapa genérico (não struct) para não perder campos
-// que o pedagio não conhece — ex: "reasoning_content" de modelos que pensam.
-// Só trocamos id e model (o agente vê o apelido) e tiramos o usage, que o
-// gateway devolve no fim se o agente pediu.
+// Each chunk is read as a generic map (not a struct) so fields nautilm does
+// not know are kept, e.g. "reasoning_content" from thinking models. We only
+// swap id and model (the agent sees the alias) and strip usage, which the
+// gateway returns at the end if the agent asked for it.
 func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provider.Emit) (*openai.Usage, error) {
 	resp, err := p.send(ctx, c, true)
 	if err != nil {
@@ -26,12 +26,12 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 
 	var usage *openai.Usage
 	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 64<<10), 8<<20) // um chunk com argumentos de tool pode ser grande
+	sc.Buffer(make([]byte, 64<<10), 8<<20) // a chunk with tool arguments can be large
 
 	for sc.Scan() {
 		line := sc.Text()
-		// SSE: só interessam linhas "data:". Comentários (":") e linhas
-		// vazias (separador de evento) são ignorados.
+		// SSE: only "data:" lines matter. Comments (":") and empty lines
+		// (event separators) are ignored.
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -45,11 +45,11 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return usage, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "chunk SSE inválido: %v", err)
+			return usage, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "invalid SSE chunk: %v", err)
 		}
 		if e, ok := chunk["error"]; ok {
 			b, _ := json.Marshal(e)
-			return usage, provider.Errorf(http.StatusBadGateway, "upstream_error", "erro no meio do stream: %s", truncate(string(b), 500))
+			return usage, provider.Errorf(http.StatusBadGateway, "upstream_error", "error in the middle of the stream: %s", truncate(string(b), 500))
 		}
 		if u, ok := chunk["usage"]; ok && u != nil {
 			var parsed openai.Usage
@@ -59,7 +59,7 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 			}
 			delete(chunk, "usage")
 		}
-		// Chunk só de usage (choices vazio): já guardamos, não repassa.
+		// Usage-only chunk (empty choices): already kept, do not forward.
 		if choices, _ := chunk["choices"].([]any); len(choices) == 0 {
 			continue
 		}
@@ -75,6 +75,6 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 		}
 		return usage, provider.Errorf(http.StatusBadGateway, "upstream_read", "%v", err)
 	}
-	// Upstream fechou sem [DONE]: alguns servidores fazem isso; tratamos como fim normal.
+	// Upstream closed without [DONE]: some servers do that; treat it as a normal end.
 	return usage, nil
 }

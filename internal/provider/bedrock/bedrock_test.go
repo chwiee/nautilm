@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
 type fakeAPI struct {
@@ -35,13 +35,13 @@ func parse(t *testing.T, s string) *openai.ChatRequest {
 	return &r
 }
 
-// Uma conversa de tool calling completa, no formato OpenAI, precisa virar
-// Converse válida: system separado, tool result dentro de user, papéis alternados.
-func TestTraducaoIda(t *testing.T) {
+// A full tool-calling conversation in the OpenAI format must become a valid
+// Converse input: separate system, tool results inside user, alternating roles.
+func TestOutboundTranslation(t *testing.T) {
 	req := parse(t, `{
 	  "model":"smart","max_tokens":100,
 	  "messages":[
-	    {"role":"system","content":"você é o kubets"},
+	    {"role":"system","content":"you are kubets"},
 	    {"role":"user","content":[{"type":"text","text":"pods?"}]},
 	    {"role":"assistant","content":null,"tool_calls":[
 	      {"id":"t1","type":"function","function":{"name":"list_pods","arguments":"{\"ns\":\"a\"}"}},
@@ -57,23 +57,23 @@ func TestTraducaoIda(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(in.System) != 1 {
-		t.Errorf("system deveria ir separado: %d", len(in.System))
+		t.Errorf("system must go separately: %d", len(in.System))
 	}
 	if len(in.Messages) != 3 {
-		t.Fatalf("esperava user, assistant, user(2 tool results): %d mensagens", len(in.Messages))
+		t.Fatalf("expected user, assistant, user(2 tool results): %d messages", len(in.Messages))
 	}
 	if in.Messages[2].Role != types.ConversationRoleUser || len(in.Messages[2].Content) != 2 {
-		t.Errorf("os dois tool results deviam fundir numa mensagem user")
+		t.Errorf("the two tool results must merge into one user message")
 	}
 	if aws.ToInt32(in.InferenceConfig.MaxTokens) != 100 {
-		t.Errorf("max_tokens não passou")
+		t.Errorf("max_tokens not forwarded")
 	}
 	if _, ok := in.ToolConfig.ToolChoice.(*types.ToolChoiceMemberAny); !ok {
-		t.Errorf("required deveria virar Any, veio %T", in.ToolConfig.ToolChoice)
+		t.Errorf("required must become Any, got %T", in.ToolConfig.ToolChoice)
 	}
 }
 
-func TestTraducaoVolta(t *testing.T) {
+func TestInboundTranslation(t *testing.T) {
 	api := &fakeAPI{out: &bedrockruntime.ConverseOutput{
 		Output: &types.ConverseOutputMemberMessage{Value: types.Message{
 			Role: types.ConversationRoleAssistant,
@@ -85,10 +85,10 @@ func TestTraducaoVolta(t *testing.T) {
 			},
 		}},
 		StopReason: types.StopReasonToolUse,
-		Usage:      &types.TokenUsage{InputTokens: aws.Int32(50), OutputTokens: aws.Int32(7), TotalTokens: aws.Int32(57), CacheReadInputTokens: aws.Int32(40)},
+		Usage:      &types.TokenUsage{InputTokens: aws.Int32(50), OutputTokens: aws.Int32(7), TotalTokens: aws.Int32(57), CacheReadInputTokens: aws.Int32(40), CacheWriteInputTokens: aws.Int32(10)},
 	}}
 	p := NewWithAPI(api, nil)
-	resp, err := p.Chat(context.Background(), provider.Call{Model: "m", Request: parse(t, `{"model":"smart","messages":[{"role":"user","content":"oi"}]}`), DefaultMaxTokens: 256})
+	resp, err := p.Chat(context.Background(), provider.Call{Model: "m", Request: parse(t, `{"model":"smart","messages":[{"role":"user","content":"hi"}]}`), DefaultMaxTokens: 256})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,11 +99,12 @@ func TestTraducaoVolta(t *testing.T) {
 	if tc := ch.Message.ToolCalls[0]; tc.ID != "t9" || tc.Function.Arguments != `{"ns":"x"}` {
 		t.Errorf("tool call: %+v", tc)
 	}
-	if resp.Usage.TotalTokens != 57 || resp.Usage.PromptTokensDetails.CachedTokens != 40 {
+	// Normalized (OpenAI semantics): input = 50 + 40 cache read + 10 cache write.
+	if resp.Usage.PromptTokens != 100 || resp.Usage.TotalTokens != 107 || resp.Usage.CacheRead() != 40 || resp.Usage.CacheWrite() != 10 {
 		t.Errorf("usage: %+v", resp.Usage)
 	}
 	if aws.ToInt32(api.in.InferenceConfig.MaxTokens) != 256 {
-		t.Errorf("max_tokens padrão do apelido não aplicado")
+		t.Errorf("the alias default max_tokens was not applied")
 	}
 }
 
@@ -112,7 +113,7 @@ func TestMapError(t *testing.T) {
 	for code, want := range cases {
 		err := mapError(&smithy.GenericAPIError{Code: code, Message: "x"})
 		if got := err.(*provider.Error).Status; got != want {
-			t.Errorf("%s → %d, quer %d", code, got, want)
+			t.Errorf("%s → %d, want %d", code, got, want)
 		}
 	}
 }

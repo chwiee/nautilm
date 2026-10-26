@@ -1,6 +1,6 @@
-// Package provider define o contrato que todo backend de LLM cumpre
-// (Bedrock, Ollama, vLLM, OpenAI...). O gateway só conhece esta interface:
-// adicionar um provedor novo = implementar Chat e registrar um "type" no main.
+// Package provider defines the contract every LLM backend fulfils
+// (Bedrock, Ollama, vLLM, OpenAI...). The gateway only knows this interface:
+// adding a new provider = implementing Chat and registering a "type" in main.
 package provider
 
 import (
@@ -8,66 +8,67 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// Call é uma chamada já resolvida pelo gateway.
+// Call is a call already resolved by the gateway.
 type Call struct {
-	// Model é o ID real no provedor (o apelido já foi traduzido).
+	// Model is the real model ID at the provider (the alias was translated).
 	Model string
-	// Request é o pedido do agente, já validado. Stream vem sempre false:
-	// o gateway cuida do streaming para o cliente.
+	// Request is the agent's request, already validated. Stream is always
+	// false: the gateway handles streaming to the client.
 	Request *openai.ChatRequest
-	// Raw é o JSON original do agente. Providers compatíveis com OpenAI
-	// repassam ele (só trocando model/stream) para não perder campos extras.
+	// Raw is the agent's original JSON. OpenAI-compatible providers forward
+	// it (only swapping model/stream) so extra fields are not lost.
 	Raw map[string]any
-	// MaxTokens padrão do apelido, usado quando o agente não informa.
+	// DefaultMaxTokens of the alias, used when the agent does not send one.
 	DefaultMaxTokens int
-	// Header traz cabeçalhos que vale propagar (ex: traceparent).
+	// Header carries headers worth propagating (e.g. traceparent).
 	Header http.Header
-	// ID e Alias vão em todo chunk de streaming: o agente vê um id estável
-	// e o apelido que pediu, nunca o ID real do modelo.
+	// ID and Alias go in every streaming chunk: the agent sees a stable id
+	// and the alias it asked for, never the real model ID.
 	ID    string
 	Alias string
 }
 
-// Provider é um backend de LLM.
+// Provider is an LLM backend.
 type Provider interface {
 	Chat(ctx context.Context, c Call) (*openai.ChatResponse, error)
 }
 
-// Emit entrega um chunk ao cliente. O valor é serializado em JSON e vai num
-// evento SSE "data: ...". Erro = o cliente desistiu: pare de ler o upstream.
+// Emit delivers a chunk to the client. The value is serialized to JSON and
+// sent as an SSE "data: ..." event. An error means the client gave up: stop
+// reading the upstream.
 type Emit func(chunk any) error
 
-// Streamer é opcional: provider que sabe fazer streaming de verdade.
-// Quem não implementa cai no "stream simulado" do gateway.
+// Streamer is optional: a provider that streams for real. Providers that
+// do not implement it fall back to the gateway's "simulated stream".
 //
-// Regras do contrato:
-//   - não emitir o chunk de usage (o gateway emite, se o cliente pediu);
-//   - devolver o usage final para as métricas;
-//   - erro ANTES do primeiro Emit ainda permite fallback; depois, não.
+// Contract rules:
+//   - do not emit the usage chunk (the gateway emits it if the client asked);
+//   - return the final usage for metrics and billing;
+//   - an error BEFORE the first Emit still allows fallback; after it, no.
 type Streamer interface {
 	ChatStream(ctx context.Context, c Call, emit Emit) (*openai.Usage, error)
 }
 
-// EmbedCall é um pedido de embeddings já resolvido.
+// EmbedCall is an embeddings request already resolved.
 type EmbedCall struct {
-	Model      string   // ID real no provedor
-	Input      []string // textos, na ordem
-	Dimensions int      // 0 = padrão do modelo
+	Model      string   // real model ID at the provider
+	Input      []string // texts, in order
+	Dimensions int      // 0 = model default
 	Header     http.Header
 }
 
-// Embedder é opcional: provider que sabe gerar embeddings.
-// Devolve um vetor por texto, NA MESMA ORDEM do Input, e o usage.
+// Embedder is optional: a provider that can generate embeddings.
+// It returns one vector per text, IN THE SAME ORDER as Input, plus usage.
 type Embedder interface {
 	Embed(ctx context.Context, c EmbedCall) ([][]float32, *openai.Usage, error)
 }
 
-// Error é um erro com status HTTP. O gateway usa Status para decidir:
-//   - devolver ao agente (4xx: o pedido está errado, tentar outro modelo não ajuda);
-//   - tentar o fallback (429 e 5xx: problema do provedor).
+// Error is an error with an HTTP status. The gateway uses Status to decide:
+//   - return it to the agent (4xx: the request is wrong, another model will not help);
+//   - try the fallback (429 and 5xx: provider trouble).
 type Error struct {
 	Status  int
 	Code    string
@@ -76,10 +77,10 @@ type Error struct {
 
 func (e *Error) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Code, e.Message) }
 
-// Retryable diz se vale tentar o próximo modelo da lista de fallback.
+// Retryable tells whether trying the next model in the fallback chain makes sense.
 func (e *Error) Retryable() bool { return e.Status == http.StatusTooManyRequests || e.Status >= 500 }
 
-// Errorf cria um *Error.
+// Errorf builds an *Error.
 func Errorf(status int, code, format string, args ...any) *Error {
 	return &Error{Status: status, Code: code, Message: fmt.Sprintf(format, args...)}
 }

@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nautilus · Usage</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4a12 12 0 1 0 12 12h-6a6 6 0 1 1-6-6z' fill='%233987e5'/%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: dark;
+  /* same tokens as the Mirante panel */
+  --page: #0b0c0e; --surface-1: #15171b; --surface-2: #1d2026; --surface-3: #262a31;
+  --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781; --hair: rgba(255,255,255,0.09);
+  --data: #3987e5;           /* single series: one hue (contrast 5.05:1 on surface-1) */
+  --warn: #fab219;           /* reserved status color: always with icon + label */
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink-1); font-family: var(--font); font-size: 14px; }
+.muted { color: var(--ink-3); }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--hair); flex-wrap: wrap; }
+.logo { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--data); background: radial-gradient(circle at 60% 40%, var(--data) 0 30%, transparent 32%); }
+.name { font-weight: 600; font-size: 16px; }
+.sub { color: var(--ink-3); }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-right: 1px solid var(--hair); border-radius: 0; }
+.seg button:last-child { border-right: 0; }
+button, select, input { background: var(--surface-2); color: var(--ink-1); border: 1px solid var(--hair); border-radius: 8px; padding: 7px 11px; font: inherit; }
+button { cursor: pointer; }
+button:hover { background: var(--surface-3); }
+button.on { background: var(--surface-3); box-shadow: inset 0 -2px 0 var(--data); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--data); outline-offset: 1px; }
+label.ctl { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-2); }
+.spacer { flex: 1; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.kpi { background: var(--surface-1); border: 1px solid var(--hair); border-radius: 12px; padding: 14px 16px; }
+.kpi .lbl { color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.kpi .val { font-size: 26px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.kpi .meta { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+.kpi.warn { border-color: rgba(250,178,25,.5); }
+.kpi.warn .val::before { content: "⚠ "; color: var(--warn); }
+.banner { border: 1px solid rgba(250,178,25,.5); background: rgba(250,178,25,.08); border-radius: 10px; padding: 10px 14px; color: var(--ink-1); }
+.banner b { color: var(--warn); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface-1); border: 1px solid var(--hair); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+.card h2 .muted { font-weight: 400; }
+/* horizontal bars */
+.bars { display: grid; gap: 6px; }
+.bar { display: grid; grid-template-columns: minmax(90px, 30%) minmax(0, 1fr) auto; gap: 10px; align-items: center; cursor: default; padding: 2px 0; }
+.bar .k { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .track { height: 14px; position: relative; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--data); border-radius: 0 4px 4px 0; min-width: 2px; }
+.bar .v { font-variant-numeric: tabular-nums; color: var(--ink-1); text-align: right; min-width: 70px; }
+.bar:hover .fill { filter: brightness(1.2); }
+/* daily columns */
+.cols { display: flex; align-items: flex-end; gap: 2px; height: 160px; border-bottom: 1px solid var(--hair); position: relative; }
+.col { flex: 1; display: flex; align-items: flex-end; height: 100%; min-width: 3px; }
+.col .c { width: 100%; background: var(--data); border-radius: 4px 4px 0 0; min-height: 1px; }
+.col:hover .c { filter: brightness(1.2); }
+.axis { display: flex; justify-content: space-between; color: var(--ink-3); font-size: 11px; margin-top: 4px; }
+.ymax { position: absolute; top: -2px; left: 0; color: var(--ink-3); font-size: 11px; }
+/* table */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--hair); text-align: right; white-space: nowrap; }
+th { color: var(--ink-3); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+th.key, td.key { text-align: left; }
+td.key { color: var(--ink-1); }
+tr:hover td { background: var(--surface-2); }
+.share { display: inline-block; width: 60px; height: 6px; background: var(--surface-3); border-radius: 3px; vertical-align: middle; margin-left: 6px; position: relative; overflow: hidden; }
+.share i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--data); }
+.unp { color: var(--warn); }
+.note { color: var(--ink-3); font-size: 12px; }
+#tip { position: fixed; pointer-events: none; background: var(--surface-3); border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; font-size: 12px; display: none; z-index: 10; max-width: 320px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+#tip b { display: block; margin-bottom: 4px; }
+#tip .row { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-2); }
+#tip .row span:last-child { color: var(--ink-1); font-variant-numeric: tabular-nums; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 20; padding: 16px; }
+.overlay.show { display: flex; }
+.dialog { background: var(--surface-1); border: 1px solid var(--hair); border-radius: 12px; padding: 20px; width: min(420px, 100%); display: grid; gap: 12px; }
+.dialog input { width: 100%; }
+.err { color: var(--warn); min-height: 1em; }
+.empty { color: var(--ink-3); padding: 24px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo" aria-hidden="true"></span>
+  <span class="name">Nautilus</span>
+  <span class="sub">LLM usage &amp; cost by agent</span>
+  <span class="right">
+    <span class="muted" id="status"></span>
+    <button id="logout" title="Forget the dashboard token in this tab">Sign out</button>
+  </span>
+</header>
+
+<main>
+  <div class="controls" role="toolbar" aria-label="Filters">
+    <div class="seg" id="presets">
+      <button data-p="7d" class="on">Last 7 days</button>
+      <button data-p="30d">Last 30 days</button>
+      <button data-p="month">This month</button>
+      <button data-p="prevmonth">Last month</button>
+    </div>
+    <label class="ctl">From <input type="date" id="from"></label>
+    <label class="ctl">To <input type="date" id="to"></label>
+    <label class="ctl">Group by
+      <select id="groupby">
+        <option value="agent">Agent</option>
+        <option value="team">Team</option>
+        <option value="cost_center">Cost center</option>
+        <option value="provider">Provider (where)</option>
+        <option value="provider,model">Provider × model</option>
+        <option value="agent,provider,model">Agent × provider × model</option>
+        <option value="agent,caller">Agent × caller (on behalf of)</option>
+      </select>
+    </label>
+    <span class="spacer"></span>
+    <button id="refresh">Refresh</button>
+    <button id="csv">Export CSV</button>
+  </div>
+
+  <section class="kpis" id="kpis" aria-label="Totals"></section>
+  <div id="unpriced"></div>
+
+  <div class="grid2">
+    <section class="card" aria-label="Cost by group">
+      <h2 id="bars-title">Cost by agent</h2>
+      <div class="bars" id="bars"></div>
+    </section>
+    <section class="card" aria-label="Daily trend">
+      <h2 id="daily-title">Cost per day</h2>
+      <div class="cols" id="cols"></div>
+      <div class="axis" id="axis"></div>
+    </section>
+  </div>
+
+  <section class="card" aria-label="Detail table">
+    <h2>Detail <span class="muted" id="period-lbl"></span></h2>
+    <div class="tablewrap"><table id="table"></table></div>
+  </section>
+
+  <p class="note" id="note"></p>
+</main>
+
+<div id="tip" role="tooltip"></div>
+
+<div class="overlay" id="login" role="dialog" aria-modal="true" aria-labelledby="login-title">
+  <form class="dialog" id="login-form">
+    <div class="name" id="login-title">Dashboard token</div>
+    <div class="muted">Usage and cost data are internal. Paste the token configured in <code>dashboard.token</code>. It is kept only in this browser tab.</div>
+    <input type="password" id="token" autocomplete="off" placeholder="token" aria-label="Dashboard token">
+    <div class="err" id="login-err"></div>
+    <button type="submit">Open</button>
+  </form>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get() { try { return sessionStorage.getItem("nautilm-token") || ""; } catch { return ""; } },
+  set(v) { try { sessionStorage.setItem("nautilm-token", v); } catch {} },
+  clear() { try { sessionStorage.removeItem("nautilm-token"); } catch {} },
+};
+let token = store.get();
+
+const iso = (d) => d.toISOString().slice(0, 10);
+function utcToday() { const n = new Date(); return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())); }
+function preset(p) {
+  const t = utcToday();
+  const d = (n) => new Date(t.getTime() + n * 86400000);
+  switch (p) {
+    case "30d": return [d(-29), t];
+    case "month": return [new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 1)), t];
+    case "prevmonth": {
+      const first = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - 1, 1));
+      const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 0));
+      return [first, last];
+    }
+    default: return [d(-6), t];
+  }
+}
+
+const fmtUSD = (v) => {
+  if (v === 0) return "$0.00";
+  if (Math.abs(v) < 0.01) return "$" + v.toFixed(4);
+  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+const fmtTok = (n) => {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+};
+const fmtInt = (n) => n.toLocaleString("en-US");
+const pct = (x) => (x * 100).toFixed(1) + "%";
+function delta(cur, prev) {
+  if (!prev) return cur ? "new this period" : "—";
+  const d = (cur - prev) / prev;
+  return (d >= 0 ? "▲ " : "▼ ") + Math.abs(d * 100).toFixed(0) + "% vs previous";
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const keyLabel = (g, by) => by.map((b) => g.key[b] || "(none)").join(" · ");
+const LABELS = { agent: "Agent", team: "Team", cost_center: "Cost center", provider: "Provider", model: "Model", caller: "Via (caller)", day: "Day" };
+
+async function api(path) {
+  const r = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+  if (r.status === 401) { askToken("Invalid token."); throw new Error("unauthorized"); }
+  if (!r.ok) {
+    let msg = "HTTP " + r.status;
+    try { msg = (await r.json()).error.message; } catch {}
+    throw new Error(msg);
+  }
+  return r;
+}
+
+function query(groupBy) {
+  const p = new URLSearchParams({ from: $("from").value, to: $("to").value, group_by: groupBy || $("groupby").value });
+  return p.toString();
+}
+
+const tip = $("tip");
+function showTip(e, title, rows) {
+  tip.innerHTML = "<b>" + esc(title) + "</b>" + rows.map(([k, v]) => '<div class="row"><span>' + esc(k) + "</span><span>" + esc(v) + "</span></div>").join("");
+  tip.style.display = "block";
+  const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(e.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+function hover(el, title, rows) {
+  el.addEventListener("mousemove", (e) => showTip(e, title, rows));
+  el.addEventListener("mouseleave", hideTip);
+}
+
+function renderKPIs(rep) {
+  const t = rep.total, p = rep.previous_total;
+  const tiles = [
+    ["Estimated cost", fmtUSD(t.cost_usd), delta(t.cost_usd, p.cost_usd)],
+    ["Input tokens", fmtTok(t.input_tokens), "cache read " + fmtTok(t.cache_read_tokens)],
+    ["Output tokens", fmtTok(t.output_tokens), delta(t.output_tokens, p.output_tokens)],
+    ["Calls", fmtInt(t.calls), t.errors ? fmtInt(t.errors) + " errors (" + pct(t.errors / t.calls) + ")" : "no errors"],
+  ];
+  let html = tiles.map(([l, v, m]) => '<div class="kpi"><div class="lbl">' + l + '</div><div class="val">' + v + '</div><div class="meta">' + esc(m) + "</div></div>").join("");
+  const warn = t.unpriced_calls > 0;
+  html += '<div class="kpi' + (warn ? " warn" : "") + '"><div class="lbl">Unpriced calls</div><div class="val">' + fmtInt(t.unpriced_calls) +
+    '</div><div class="meta">' + (warn ? "cost unknown: add a price" : "every call priced") + "</div></div>";
+  $("kpis").innerHTML = html;
+}
+
+async function renderUnpriced(rep) {
+  if (!rep.total.unpriced_calls) { $("unpriced").innerHTML = ""; return; }
+  const r = await (await api("/v1/usage?" + query("provider,model"))).json();
+  const list = r.groups.filter((g) => g.unpriced_calls > 0).map((g) => esc(g.key.provider + "/" + g.key.model) + " (" + fmtInt(g.unpriced_calls) + ")");
+  $("unpriced").innerHTML = '<div class="banner" role="status"><b>⚠ Unpriced:</b> ' + list.join(", ") +
+    ". These calls are NOT counted as zero; their cost is unknown. Add the model to <code>pricing</code> in the nautilm config.</div>";
+}
+
+function renderBars(rep) {
+  const by = rep.group_by;
+  const useCost = rep.total.cost_usd > 0;
+  $("bars-title").textContent = (useCost ? "Cost" : "Tokens") + " by " + by.map((b) => LABELS[b].toLowerCase()).join(" × ") + (useCost ? "" : " (no priced usage in the period)");
+  const val = (g) => useCost ? g.cost_usd : g.input_tokens + g.output_tokens;
+  let groups = rep.groups.slice();
+  const MAX = 12;
+  if (groups.length > MAX) {
+    const rest = groups.slice(MAX - 1);
+    const other = { key: Object.fromEntries(by.map((b) => [b, "Other (" + rest.length + ")"])), cost_usd: 0, input_tokens: 0, output_tokens: 0, calls: 0, cost_share: 0, token_share: 0 };
+    rest.forEach((g) => { other.cost_usd += g.cost_usd; other.input_tokens += g.input_tokens; other.output_tokens += g.output_tokens; other.calls += g.calls; other.cost_share += g.cost_share; other.token_share += g.token_share; });
+    groups = groups.slice(0, MAX - 1).concat([other]);
+  }
+  const top = Math.max(...groups.map(val), 0);
+  const box = $("bars");
+  box.innerHTML = "";
+  if (!groups.length || top === 0) { box.innerHTML = '<div class="empty">No usage in this period.</div>'; return; }
+  groups.forEach((g) => {
+    const el = document.createElement("div");
+    el.className = "bar";
+    const label = keyLabel(g, by);
+    el.innerHTML = '<span class="k" title="' + esc(label) + '">' + esc(label) + '</span><span class="track"><span class="fill" style="width:' +
+      (val(g) / top * 100).toFixed(2) + '%"></span></span><span class="v">' + (useCost ? fmtUSD(g.cost_usd) : fmtTok(val(g))) + "</span>";
+    hover(el, label, [
+      ["Cost", fmtUSD(g.cost_usd)], ["Share of cost", pct(g.cost_share)],
+      ["Input tokens", fmtInt(g.input_tokens)], ["Output tokens", fmtInt(g.output_tokens)], ["Calls", fmtInt(g.calls)],
+    ]);
+    box.appendChild(el);
+  });
+}
+
+async function renderDaily() {
+  const rep = await (await api("/v1/usage?" + query("day"))).json();
+  const byDay = Object.fromEntries(rep.groups.map((g) => [g.key.day, g]));
+  const days = [];
+  for (let d = new Date(rep.from + "T00:00:00Z"); iso(d) <= rep.to; d = new Date(d.getTime() + 86400000)) days.push(iso(d));
+  const useCost = rep.total.cost_usd > 0;
+  $("daily-title").textContent = useCost ? "Cost per day (UTC)" : "Tokens per day (UTC)";
+  const val = (g) => !g ? 0 : useCost ? g.cost_usd : g.input_tokens + g.output_tokens;
+  const top = Math.max(...days.map((d) => val(byDay[d])), 0);
+  const box = $("cols");
+  box.innerHTML = top ? '<span class="ymax">' + (useCost ? fmtUSD(top) : fmtTok(top)) + "</span>" : '<div class="empty" style="width:100%">No usage in this period.</div>';
+  if (top) days.forEach((d) => {
+    const g = byDay[d];
+    const el = document.createElement("div");
+    el.className = "col";
+    el.innerHTML = '<div class="c" style="height:' + (val(g) / top * 100).toFixed(2) + '%"></div>';
+    hover(el, d, g ? [["Cost", fmtUSD(g.cost_usd)], ["Input tokens", fmtInt(g.input_tokens)], ["Output tokens", fmtInt(g.output_tokens)], ["Calls", fmtInt(g.calls)]] : [["No usage", ""]]);
+    box.appendChild(el);
+  });
+  $("axis").innerHTML = "<span>" + days[0] + "</span>" + (days.length > 2 ? "<span>" + days[Math.floor(days.length / 2)] + "</span>" : "") + "<span>" + days[days.length - 1] + "</span>";
+}
+
+function renderTable(rep) {
+  const by = rep.group_by;
+  const head = by.map((b) => '<th class="key" scope="col">' + LABELS[b] + "</th>").join("") +
+    '<th scope="col">Calls</th><th scope="col">Errors</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Cache read</th><th scope="col">Cost (USD)</th><th scope="col">Share</th><th scope="col">vs previous</th>';
+  const rows = rep.groups.map((g) => "<tr>" + by.map((b) => '<td class="key">' + esc(g.key[b] || "(none)") + "</td>").join("") +
+    "<td>" + fmtInt(g.calls) + "</td><td>" + fmtInt(g.errors) + "</td><td>" + fmtInt(g.input_tokens) + "</td><td>" + fmtInt(g.output_tokens) +
+    "</td><td>" + fmtInt(g.cache_read_tokens) + "</td><td>" + fmtUSD(g.cost_usd) + (g.unpriced_calls ? ' <span class="unp" title="calls without a price">⚠ ' + g.unpriced_calls + " unpriced</span>" : "") +
+    "</td><td>" + pct(g.cost_share) + '<span class="share" aria-hidden="true"><i style="width:' + (g.cost_share * 100).toFixed(1) + '%"></i></span></td><td>' +
+    (by.includes("day") ? "—" : esc(delta(g.cost_usd, g.previous.cost_usd))) + "</td></tr>").join("");
+  const t = rep.total;
+  const foot = '<tr><td class="key" colspan="' + by.length + '"><b>Total</b></td><td><b>' + fmtInt(t.calls) + "</b></td><td>" + fmtInt(t.errors) + "</td><td>" + fmtInt(t.input_tokens) +
+    "</td><td>" + fmtInt(t.output_tokens) + "</td><td>" + fmtInt(t.cache_read_tokens) + "</td><td><b>" + fmtUSD(t.cost_usd) + "</b></td><td>100%</td><td>" + esc(delta(t.cost_usd, rep.previous_total.cost_usd)) + "</td></tr>";
+  $("table").innerHTML = "<thead><tr>" + head + "</tr></thead><tbody>" + (rows || '<tr><td class="key" colspan="' + (by.length + 8) + '">No usage in this period.</td></tr>') + "</tbody><tfoot>" + foot + "</tfoot>";
+  $("period-lbl").textContent = "· " + rep.from + " to " + rep.to + " (" + rep.days + " days, UTC) · previous period: same length right before";
+  $("note").textContent = rep.note;
+}
+
+async function load() {
+  if (!token) { askToken(""); return; }
+  $("status").textContent = "loading…";
+  try {
+    const rep = await (await api("/v1/usage?" + query())).json();
+    renderKPIs(rep);
+    renderBars(rep);
+    renderTable(rep);
+    await Promise.all([renderDaily(), renderUnpriced(rep)]);
+    $("status").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message;
+  }
+}
+
+function askToken(msg) {
+  $("login-err").textContent = msg;
+  $("login").classList.add("show");
+  $("token").focus();
+}
+$("login-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  token = $("token").value.trim();
+  if (!token) return;
+  store.set(token);
+  $("login").classList.remove("show");
+  load();
+});
+$("logout").addEventListener("click", () => { store.clear(); token = ""; askToken(""); });
+
+function setPreset(p) {
+  const [f, t] = preset(p);
+  $("from").value = iso(f); $("to").value = iso(t);
+  document.querySelectorAll("#presets button").forEach((b) => b.classList.toggle("on", b.dataset.p === p));
+}
+document.querySelectorAll("#presets button").forEach((b) => b.addEventListener("click", () => { setPreset(b.dataset.p); load(); }));
+["from", "to"].forEach((id) => $(id).addEventListener("change", () => {
+  document.querySelectorAll("#presets button").forEach((b) => b.classList.remove("on"));
+  load();
+}));
+$("groupby").addEventListener("change", load);
+$("refresh").addEventListener("click", load);
+$("csv").addEventListener("click", async () => {
+  try {
+    const r = await api("/v1/usage.csv?" + query());
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "nautilm-usage-" + $("from").value + "-to-" + $("to").value + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
+});
+
+setPreset("7d");
+load();
+</script>
+</body>
+</html>

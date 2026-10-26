@@ -8,25 +8,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Valkey guarda os contadores no Valkey/ElastiCache: todas as réplicas do
-// pedagio enxergam o mesmo total. INCRBY é atômico, sem corrida entre réplicas.
-type Valkey struct{ c *redis.Client }
+// Valkey keeps the counters in Valkey/ElastiCache: every nautilm replica
+// sees the same total. INCRBY is atomic, so replicas do not race.
+type Valkey struct{ c redis.UniversalClient }
 
-// NewValkey aceita redis://host:6379 ou rediss://host:6379 (TLS, ElastiCache).
-func NewValkey(url string) (*Valkey, error) {
-	opt, err := redis.ParseURL(url)
-	if err != nil {
-		return nil, err
-	}
-	// Timeouts curtos: se o Valkey engasgar, a cota deixa passar (fail-open)
-	// em vez de segurar a chamada do agente.
-	opt.DialTimeout = 500 * time.Millisecond
-	opt.ReadTimeout = 200 * time.Millisecond
-	opt.WriteTimeout = 200 * time.Millisecond
-	return &Valkey{c: redis.NewClient(opt)}, nil
-}
-
-func (v *Valkey) Ping(ctx context.Context) error { return v.c.Ping(ctx).Err() }
+// NewValkey uses an open connection (see internal/valkey.Connect).
+func NewValkey(c redis.UniversalClient) *Valkey { return &Valkey{c: c} }
 
 func (v *Valkey) Get(ctx context.Context, key string) (int64, error) {
 	n, err := v.c.Get(ctx, key).Int64()

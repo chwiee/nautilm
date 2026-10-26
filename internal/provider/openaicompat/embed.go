@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// Embed repassa para POST /embeddings (Ollama /v1, vLLM, OpenAI...).
+// Embed forwards to POST /embeddings (Ollama /v1, vLLM, OpenAI...).
 func (p *Provider) Embed(ctx context.Context, c provider.EmbedCall) ([][]float32, *openai.Usage, error) {
 	body := map[string]any{"model": c.Model, "input": c.Input}
 	if c.Dimensions > 0 {
@@ -44,12 +44,12 @@ func (p *Provider) Embed(ctx context.Context, c provider.EmbedCall) ([][]float32
 	}
 	var out openai.EmbeddingResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "resposta não é JSON de embeddings: %v", err)
+		return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "response is not embeddings JSON: %v", err)
 	}
 	if len(out.Data) != len(c.Input) {
-		return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "pedi %d embeddings, vieram %d", len(c.Input), len(out.Data))
+		return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "asked for %d embeddings, got %d", len(c.Input), len(out.Data))
 	}
-	// A especificação diz que "index" manda na ordem; não confiamos na ordem do array.
+	// The spec says "index" defines the order; we do not trust the array order.
 	sort.Slice(out.Data, func(i, j int) bool { return out.Data[i].Index < out.Data[j].Index })
 	vecs := make([][]float32, len(out.Data))
 	for i, d := range out.Data {

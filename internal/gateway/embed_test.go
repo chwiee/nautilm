@@ -3,24 +3,21 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/chwiee/pedagio/internal/auth"
-	"github.com/chwiee/pedagio/internal/config"
-	"github.com/chwiee/pedagio/internal/metrics"
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/config"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
 type fakeEmbedder struct {
 	fake
-	err  error
-	dims int
+	err   error
+	dims  int
+	input []string
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, c provider.EmbedCall) ([][]float32, *openai.Usage, error) {
@@ -29,6 +26,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, c provider.EmbedCall) ([][]float
 		return nil, nil, f.err
 	}
 	f.dims = c.Dimensions
+	f.input = append([]string(nil), c.Input...)
 	out := make([][]float32, len(c.Input))
 	for i := range c.Input {
 		out[i] = []float32{float32(i), 1}
@@ -36,32 +34,15 @@ func (f *fakeEmbedder) Embed(_ context.Context, c provider.EmbedCall) ([][]float
 	return out, &openai.Usage{PromptTokens: 3 * len(c.Input), TotalTokens: 3 * len(c.Input)}, nil
 }
 
-const embedConfig = `
-providers:
-  a: {type: openai, base_url: http://x}
-models:
-  smart: {provider: a, model: chat-model}
-  embed: {type: embedding, provider: a, model: embed-model, dimensions: 512}
-auth: {modes: [tokens], tokens: {k: tok}}
-agents: {k: {models: ["*"]}}
-`
-
-func setupEmbed(t *testing.T, e *fakeEmbedder) *httptest.Server {
+func postEmbed(t *testing.T, env testEnv, token, body string) *http.Response {
 	t.Helper()
-	cfg, err := config.Parse([]byte(embedConfig))
-	if err != nil {
-		t.Fatal(err)
-	}
-	gw := New(cfg, map[string]provider.Provider{"a": e}, auth.Chain{auth.NewTokens(cfg.Auth.Tokens)}, metrics.New(), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv := httptest.NewServer(gw.Handler())
-	t.Cleanup(srv.Close)
-	return srv
+	return do(t, http.MethodPost, env.srv.URL+"/v1/embeddings", token, body)
 }
 
 func TestEmbeddings(t *testing.T) {
 	e := &fakeEmbedder{}
-	srv := setupEmbed(t, e)
-	resp := postPath(t, srv, "/v1/embeddings", `{"model":"embed","input":["a","b"]}`)
+	env := setup(t, e, &fake{})
+	resp := postEmbed(t, env, "tok-k8s", `{"model":"embed","input":["a","b"]}`)
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d: %s", resp.StatusCode, b)
@@ -69,28 +50,32 @@ func TestEmbeddings(t *testing.T) {
 	var out openai.EmbeddingResponse
 	json.NewDecoder(resp.Body).Decode(&out)
 	if len(out.Data) != 2 || out.Data[1].Index != 1 || out.Model != "embed" || out.Usage.PromptTokens != 6 {
-		t.Errorf("resposta: %+v", out)
+		t.Errorf("response: %+v", out)
 	}
 	if e.calls[0] != "embed-model" || e.dims != 512 {
-		t.Errorf("chamada: %v dims=%d", e.calls, e.dims)
+		t.Errorf("call: %v dims=%d", e.calls, e.dims)
 	}
-	// input string única também vale
-	if resp := postPath(t, srv, "/v1/embeddings", `{"model":"embed","input":"só um"}`); resp.StatusCode != 200 {
-		t.Errorf("input string: %d", resp.StatusCode)
+	// 6 tokens × 0.02 per 1M
+	if resp.Header.Get("X-Nautilm-Cost-USD") != "0.00000012" || resp.Header.Get("X-Nautilm-Price-Source") != "table" {
+		t.Errorf("cost headers: %v", resp.Header)
 	}
-}
-
-func TestEmbeddingsTipoErrado(t *testing.T) {
-	srv := setupEmbed(t, &fakeEmbedder{})
-	if r := postPath(t, srv, "/v1/embeddings", `{"model":"smart","input":["a"]}`); r.StatusCode != 400 {
-		t.Errorf("chat em /v1/embeddings: %d", r.StatusCode)
-	}
-	if r := postPath(t, srv, "/v1/chat/completions", `{"model":"embed","messages":[{"role":"user","content":"oi"}]}`); r.StatusCode != 400 {
-		t.Errorf("embedding em /v1/chat/completions: %d", r.StatusCode)
+	// a single string input also works
+	if resp := postEmbed(t, env, "tok-k8s", `{"model":"embed","input":"just one"}`); resp.StatusCode != 200 {
+		t.Errorf("string input: %d", resp.StatusCode)
 	}
 }
 
-func TestEmbeddingSemFallbackNoConfig(t *testing.T) {
+func TestEmbeddingsWrongType(t *testing.T) {
+	env := setup(t, &fakeEmbedder{}, &fake{})
+	if r := postEmbed(t, env, "tok-k8s", `{"model":"smart","input":["a"]}`); r.StatusCode != 400 {
+		t.Errorf("chat on /v1/embeddings: %d", r.StatusCode)
+	}
+	if r := post(t, env.srv, "tok-k8s", fmt.Sprintf(hello, "embed")); r.StatusCode != 400 {
+		t.Errorf("embedding on /v1/chat/completions: %d", r.StatusCode)
+	}
+}
+
+func TestEmbeddingWithoutFallbackInConfig(t *testing.T) {
 	_, err := config.Parse([]byte(`
 providers: {a: {type: openai, base_url: http://x}}
 models:
@@ -98,18 +83,6 @@ models:
   e2: {type: embedding, provider: a, model: m2}
 `))
 	if err == nil {
-		t.Fatal("embedding com fallback deveria ser recusado no config")
+		t.Fatal("an embedding with a fallback must be refused by the config")
 	}
-}
-
-func postPath(t *testing.T, srv *httptest.Server, path, body string) *http.Response {
-	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer tok")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return resp
 }

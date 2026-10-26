@@ -1,21 +1,21 @@
-// Package quota limita quantos tokens cada agente gasta por minuto e por dia.
+// Package quota limits how many tokens each agent spends per minute and per day.
 //
-// Por que? Um agente em loop (bug de tool, prompt que nunca termina) pode
-// queimar o orçamento do mês numa noite. Com a cota, ele leva 429 e os
-// outros agentes seguem funcionando.
+// Why? An agent stuck in a loop (tool bug, prompt that never ends) can burn
+// the month's budget overnight. With a quota it gets a 429 and the other
+// agents keep working.
 //
-// Como funciona (janela fixa, simples de explicar):
+// How it works (fixed windows, easy to explain):
 //
-//	antes da chamada:  usado no minuto >= limite? → 429 + Retry-After
-//	                   usado no dia    >= limite? → 429 + Retry-After
-//	depois da chamada: soma tokens de entrada + saída nos dois contadores
+//	before the call: used this minute >= limit? → 429 + Retry-After
+//	                 used today       >= limit? → 429 + Retry-After
+//	after the call:  add input + output tokens to both counters
 //
-// Só sabemos o custo DEPOIS da resposta, então a última chamada pode passar
-// um pouco do limite. É o mesmo trade-off dos gateways prontos: estimar
-// antes custaria um tokenizer por modelo.
+// The cost is only known AFTER the response, so the last call may go a bit
+// over the limit. It is the same trade-off as off-the-shelf gateways:
+// estimating beforehand would need one tokenizer per model.
 //
-// Contadores: em memória (uma réplica / dev) ou no Valkey (várias réplicas
-// enxergam o mesmo número).
+// Counters: in memory (single replica / dev) or in Valkey (every replica
+// sees the same number).
 package quota
 
 import (
@@ -25,40 +25,40 @@ import (
 	"time"
 )
 
-// Limits de um agente. 0 = sem limite naquela janela.
+// Limits of one agent. 0 = no limit in that window.
 type Limits struct {
 	PerMinute int64
 	PerDay    int64
 }
 
-// Counter guarda os contadores. Add soma e devolve o novo total.
+// Counter stores the counters. Add increments and returns the new total.
 type Counter interface {
 	Get(ctx context.Context, key string) (int64, error)
 	Add(ctx context.Context, key string, n int64, ttl time.Duration) (int64, error)
 }
 
-// Decision diz se o pedido pode seguir.
+// Decision tells whether the request may go on.
 type Decision struct {
 	Allowed    bool
-	Window     string        // "minuto" | "dia" (qual estourou)
-	RetryAfter time.Duration // quanto falta para a janela virar
-	DayLeft    int64         // tokens restantes no dia (-1 = sem limite)
+	Window     string        // "minute" | "day" (which one is exhausted)
+	RetryAfter time.Duration // time until the window rolls over
+	DayLeft    int64         // tokens left today (-1 = no limit)
 }
 
-// Quota aplica limites sobre um Counter.
+// Quota applies limits on top of a Counter.
 type Quota struct {
 	Counter Counter
 	Prefix  string
-	Now     func() time.Time // trocável nos testes
+	Now     func() time.Time // swappable in tests
 }
 
 func New(c Counter) *Quota {
-	return &Quota{Counter: c, Prefix: "pedagio:cota:", Now: time.Now}
+	return &Quota{Counter: c, Prefix: "nautilm:quota:", Now: time.Now}
 }
 
-// Check confere se o agente ainda tem cota. Erro do contador = deixa passar
-// (fail-open): cota protege custo, não pode derrubar os agentes. Quem chama
-// loga o erro.
+// Check tells whether the agent still has quota. A counter error lets the
+// call through (fail-open): quotas protect cost, they must not take the
+// agents down. The caller logs the error.
 func (q *Quota) Check(ctx context.Context, agent string, l Limits) (Decision, error) {
 	now := q.Now().UTC()
 	d := Decision{Allowed: true, DayLeft: -1}
@@ -71,7 +71,7 @@ func (q *Quota) Check(ctx context.Context, agent string, l Limits) (Decision, er
 		}
 		d.DayLeft = max(0, l.PerDay-used)
 		if used >= l.PerDay {
-			return Decision{Window: "dia", RetryAfter: untilNextDay(now), DayLeft: 0}, nil
+			return Decision{Window: "day", RetryAfter: untilNextDay(now), DayLeft: 0}, nil
 		}
 	}
 	if l.PerMinute > 0 {
@@ -80,14 +80,14 @@ func (q *Quota) Check(ctx context.Context, agent string, l Limits) (Decision, er
 			return d, err
 		}
 		if used >= l.PerMinute {
-			return Decision{Window: "minuto", RetryAfter: untilNextMinute(now), DayLeft: d.DayLeft}, nil
+			return Decision{Window: "minute", RetryAfter: untilNextMinute(now), DayLeft: d.DayLeft}, nil
 		}
 	}
 	return d, nil
 }
 
-// Spend soma os tokens gastos. TTL um pouco maior que a janela: a chave
-// some sozinha, sem job de limpeza.
+// Spend adds the tokens spent. The TTL is a bit longer than the window: the
+// key disappears by itself, no cleanup job.
 func (q *Quota) Spend(ctx context.Context, agent string, l Limits, tokens int64) error {
 	if tokens <= 0 {
 		return nil
@@ -121,7 +121,7 @@ func untilNextDay(now time.Time) time.Duration {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC).Sub(now)
 }
 
-// Memory é o contador em memória (uma réplica só).
+// Memory is the in-memory counter (single replica).
 type Memory struct {
 	mu   sync.Mutex
 	vals map[string]memVal
@@ -148,7 +148,7 @@ func (m *Memory) Add(_ context.Context, key string, n int64, ttl time.Duration) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	// limpeza preguiçosa: aproveita a escrita para jogar fora o que expirou
+	// lazy cleanup: use the write to drop what expired
 	if len(m.vals) > 10_000 {
 		for k, v := range m.vals {
 			if now.After(v.exp) {

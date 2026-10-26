@@ -1,17 +1,17 @@
-// Package mask tira dados sensíveis do texto ANTES de ele ir para o modelo.
+// Package mask removes sensitive data from text BEFORE it reaches a model.
 //
-// Por que no pedagio? Porque todo agente passa por aqui: uma regra só,
-// valendo para todos, sem depender de cada time lembrar. O que o modelo
-// nunca vê, ele não vaza (nem para o provedor, nem na resposta, nem no log
-// de quem estiver olhando o prompt).
+// Why in nautilm? Because every agent goes through it: one rule, valid for
+// everyone, without depending on each team remembering. What the model
+// never sees, it cannot leak (not to the provider, not in the answer, not in
+// the logs of whoever looks at the prompt).
 //
-// Ligado por padrão com as regras embutidas abaixo. Ajuste no YAML:
+// On by default with the built-in rules below. Tune it in YAML:
 //
-//	mascarar:
-//	  desligar: [email]                          # tira regras embutidas
-//	  extra:                                      # acrescenta as suas
-//	    - {nome: matricula, regex: 'MAT-\d{6}'}
-//	# ou: mascarar: {desligado: true}
+//	masking:
+//	  disable: [email]                           # turn built-in rules off
+//	  extra:                                      # add your own
+//	    - {name: employee_id, regex: 'MAT-\d{6}'}
+//	# or: masking: {disabled: true}
 package mask
 
 import (
@@ -21,90 +21,92 @@ import (
 	"strings"
 )
 
-// Rule troca o que casa com Re por Replace (pode usar $1 para manter grupos).
+// Rule replaces what matches Re with Replace (may use $1 to keep groups).
 type Rule struct {
 	Name    string
 	Re      *regexp.Regexp
 	Replace string
-	// Check opcional: só mascara se devolver true (ex: Luhn no cartão).
+	// Check is optional: only mask when it returns true (e.g. Luhn for cards).
 	Check func(match string) bool
-	// Fn opcional: monta a troca a partir dos grupos (quando Replace não basta).
+	// Fn is optional: builds the replacement from the groups (when Replace is not enough).
 	Fn func(groups []string) string
 }
 
-// Builtin são as regras embutidas, na ordem em que rodam (as mais
-// específicas primeiro: uma chave privada contém coisas que pareceriam token).
+// Builtin returns the built-in rules, in the order they run (most specific
+// first: a private key contains things that would look like a token).
 func Builtin() []Rule {
 	return []Rule{
-		{Name: "chave_privada", Re: regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), Replace: "[CHAVE_PRIVADA]"},
+		{Name: "private_key", Re: regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), Replace: "[PRIVATE_KEY]"},
 		{Name: "jwt", Re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), Replace: "[JWT]"},
 		{Name: "aws_key", Re: regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`), Replace: "[AWS_KEY]"},
 		{Name: "bearer", Re: regexp.MustCompile(`(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{16,}`), Replace: "$1 [TOKEN]"},
-		// chave=valor, chave: valor e "chave":"valor" (JSON dos argumentos de
-		// tool) para nomes que indicam segredo. Mantém as aspas: o JSON continua válido.
-		{Name: "segredo", Re: regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*(?:senha|password|passwd|pwd|secret|api[_-]?key|token))("?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;"'}]+)`), Fn: func(g []string) string {
+		// key=value, key: value and "key":"value" (tool-call JSON arguments) for
+		// names that mean a secret, with prefixes (DB_PASSWORD, GITHUB_TOKEN).
+		// "senha" is Portuguese for password: it shows up in our logs.
+		// Quotes are kept, so the JSON stays valid.
+		{Name: "secret", Re: regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*(?:senha|password|passwd|pwd|secret|api[_-]?key|token))("?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;"'}]+)`), Fn: func(g []string) string {
 			q := ""
 			if c := g[3][0]; c == '"' || c == '\'' {
 				q = string(c)
 			}
-			return g[1] + g[2] + q + "[SEGREDO]" + q
+			return g[1] + g[2] + q + "[SECRET]" + q
 		}},
 		{Name: "cpf", Re: regexp.MustCompile(`\b\d{3}\.\d{3}\.\d{3}-\d{2}\b`), Replace: "[CPF]"},
 		{Name: "cnpj", Re: regexp.MustCompile(`\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b`), Replace: "[CNPJ]"},
-		{Name: "cartao", Re: regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`), Replace: "[CARTAO]", Check: luhn},
+		{Name: "credit_card", Re: regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`), Replace: "[CREDIT_CARD]", Check: luhn},
 		{Name: "email", Re: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`), Replace: "[EMAIL]"},
 	}
 }
 
-// Config é o bloco "mascarar" do YAML.
+// Config is the "masking" block of the YAML.
 type Config struct {
-	Desligado bool     `yaml:"desligado"`
-	Desligar  []string `yaml:"desligar"`
-	Extra     []Extra  `yaml:"extra"`
+	Disabled bool     `yaml:"disabled"`
+	Disable  []string `yaml:"disable"`
+	Extra    []Extra  `yaml:"extra"`
 }
 
 type Extra struct {
-	Nome  string `yaml:"nome"`
+	Name  string `yaml:"name"`
 	Regex string `yaml:"regex"`
 }
 
-// Masker aplica as regras.
+// Masker applies the rules.
 type Masker struct{ rules []Rule }
 
-// New monta o Masker. cfg nil = todas as regras embutidas (ligado por padrão).
+// New builds the Masker. A nil cfg = all built-in rules (on by default).
 func New(cfg *Config) (*Masker, error) {
-	if cfg != nil && cfg.Desligado {
+	if cfg != nil && cfg.Disabled {
 		return &Masker{}, nil
 	}
 	var rules []Rule
 	known := map[string]bool{}
 	for _, r := range Builtin() {
 		known[r.Name] = true
-		if cfg == nil || !slices.Contains(cfg.Desligar, r.Name) {
+		if cfg == nil || !slices.Contains(cfg.Disable, r.Name) {
 			rules = append(rules, r)
 		}
 	}
 	if cfg != nil {
-		for _, d := range cfg.Desligar {
+		for _, d := range cfg.Disable {
 			if !known[d] {
-				return nil, fmt.Errorf("mascarar.desligar: regra %q não existe (embutidas: %s)", d, strings.Join(Names(), ", "))
+				return nil, fmt.Errorf("masking.disable: rule %q does not exist (built-in: %s)", d, strings.Join(Names(), ", "))
 			}
 		}
 		for _, e := range cfg.Extra {
+			if e.Name == "" {
+				return nil, fmt.Errorf("masking.extra: rule without a name (regex %q)", e.Regex)
+			}
 			re, err := regexp.Compile(e.Regex)
 			if err != nil {
-				return nil, fmt.Errorf("mascarar.extra %q: regex inválida: %w", e.Nome, err)
+				return nil, fmt.Errorf("masking.extra %q: invalid regex: %w", e.Name, err)
 			}
-			if e.Nome == "" {
-				return nil, fmt.Errorf("mascarar.extra: regra sem nome (regex %q)", e.Regex)
-			}
-			rules = append(rules, Rule{Name: e.Nome, Re: re, Replace: "[" + strings.ToUpper(e.Nome) + "]"})
+			rules = append(rules, Rule{Name: e.Name, Re: re, Replace: "[" + strings.ToUpper(e.Name) + "]"})
 		}
 	}
 	return &Masker{rules: rules}, nil
 }
 
-// Names lista as regras embutidas.
+// Names lists the built-in rules.
 func Names() []string {
 	var n []string
 	for _, r := range Builtin() {
@@ -113,7 +115,7 @@ func Names() []string {
 	return n
 }
 
-// Enabled lista as regras ativas (log de subida).
+// Enabled lists the active rules (startup log).
 func (m *Masker) Enabled() []string {
 	var n []string
 	for _, r := range m.rules {
@@ -122,7 +124,7 @@ func (m *Masker) Enabled() []string {
 	return n
 }
 
-// Apply mascara o texto e conta quantas trocas cada regra fez.
+// Apply masks the text and counts how many replacements each rule made.
 func (m *Masker) Apply(s string, counts map[string]int) string {
 	if m == nil || s == "" {
 		return s
@@ -142,7 +144,7 @@ func (m *Masker) Apply(s string, counts map[string]int) string {
 	return s
 }
 
-// luhn valida número de cartão (evita mascarar qualquer sequência de dígitos).
+// luhn validates a card number (avoids masking any digit sequence).
 func luhn(s string) bool {
 	var digits []int
 	for _, c := range s {

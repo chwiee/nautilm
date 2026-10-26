@@ -1,13 +1,16 @@
-// Package metrics expõe contadores no formato texto do Prometheus, sem
-// dependência externa. É daqui que sai "quanto cada agente/time gasta".
+// Package metrics exposes counters in the Prometheus text format, with no
+// external dependency. It is for OPERATIONS (Grafana, alerts). Billing
+// lives in the usage ledger (internal/usage), which keeps months of totals.
 //
-//	pedagio_requests_total{agent,alias,model,status}
-//	pedagio_tokens_total{agent,alias,model,kind="input|output|cached"}
-//	pedagio_request_duration_seconds_sum / _count{agent,alias,model}
-//	pedagio_time_to_first_token_seconds_sum / _count{agent,alias,model}
-//	pedagio_fallbacks_total{agent,from,to}
-//	pedagio_masked_total{agent,rule}
-//	pedagio_cost_usd_total{agent,alias,model}
+//	nautilm_requests_total{agent,alias,provider,model,status}
+//	nautilm_tokens_total{agent,alias,provider,model,kind="input|output|cache_read|cache_write"}
+//	nautilm_cost_usd_total{agent,provider,model,source}
+//	nautilm_request_duration_seconds_sum / _count{agent,alias,provider,model}
+//	nautilm_time_to_first_token_seconds_sum / _count{agent,alias,model}
+//	nautilm_fallbacks_total{agent,from,to}
+//	nautilm_rejected_total{agent,reason}
+//	nautilm_masked_total{agent,rule}
+//	nautilm_usage_lost_total (usage records that could not be stored)
 package metrics
 
 import (
@@ -22,52 +25,82 @@ import (
 
 type Registry struct {
 	mu       sync.Mutex
-	counters map[string]float64 // chave = nome{labels}
+	counters map[string]float64 // key = name{labels}
 }
 
 func New() *Registry { return &Registry{counters: map[string]float64{}} }
 
-// Call registra uma chamada a um modelo.
-func (r *Registry) Call(agent, alias, model string, status int, d time.Duration, in, out, cached int) {
-	l := labels("agent", agent, "alias", alias, "model", model)
+// Call records a call to a model. agent is who pays (see usage.Record).
+func (r *Registry) Call(agent, alias, provider, model string, status int, d time.Duration, in, out, cacheRead, cacheWrite int) {
+	l := labels("agent", agent, "alias", alias, "provider", provider, "model", model)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.counters["pedagio_requests_total"+labels("agent", agent, "alias", alias, "model", model, "status", fmt.Sprint(status))]++
-	r.counters["pedagio_request_duration_seconds_sum"+l] += d.Seconds()
-	r.counters["pedagio_request_duration_seconds_count"+l]++
-	if in > 0 {
-		r.counters["pedagio_tokens_total"+labels("agent", agent, "alias", alias, "model", model, "kind", "input")] += float64(in)
-	}
-	if out > 0 {
-		r.counters["pedagio_tokens_total"+labels("agent", agent, "alias", alias, "model", model, "kind", "output")] += float64(out)
-	}
-	if cached > 0 {
-		r.counters["pedagio_tokens_total"+labels("agent", agent, "alias", alias, "model", model, "kind", "cached")] += float64(cached)
+	r.counters["nautilm_requests_total"+labels("agent", agent, "alias", alias, "provider", provider, "model", model, "status", fmt.Sprint(status))]++
+	r.counters["nautilm_request_duration_seconds_sum"+l] += d.Seconds()
+	r.counters["nautilm_request_duration_seconds_count"+l]++
+	for kind, n := range map[string]int{"input": in, "output": out, "cache_read": cacheRead, "cache_write": cacheWrite} {
+		if n > 0 {
+			r.counters["nautilm_tokens_total"+labels("agent", agent, "alias", alias, "provider", provider, "model", model, "kind", kind)] += float64(n)
+		}
 	}
 }
 
-// FirstToken registra o tempo até o 1º chunk chegar ao agente (só streaming).
-// É a latência que o usuário sente no chat.
+// Cost adds the estimated cost in USD. source = table | provider (free and
+// unpriced calls add nothing here; unpriced ones are counted by Unpriced).
+func (r *Registry) Cost(agent, provider, model, source string, usd float64) {
+	if usd <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["nautilm_cost_usd_total"+labels("agent", agent, "provider", provider, "model", model, "source", source)] += usd
+}
+
+// Unpriced counts calls whose model has no price (cost unknown).
+func (r *Registry) Unpriced(agent, provider, model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["nautilm_unpriced_calls_total"+labels("agent", agent, "provider", provider, "model", model)]++
+}
+
+// FirstToken records the time until the 1st chunk reached the agent
+// (streaming only). It is the latency the user feels in a chat.
 func (r *Registry) FirstToken(agent, alias, model string, d time.Duration) {
 	l := labels("agent", agent, "alias", alias, "model", model)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.counters["pedagio_time_to_first_token_seconds_sum"+l] += d.Seconds()
-	r.counters["pedagio_time_to_first_token_seconds_count"+l]++
+	r.counters["nautilm_time_to_first_token_seconds_sum"+l] += d.Seconds()
+	r.counters["nautilm_time_to_first_token_seconds_count"+l]++
 }
 
-// Fallback registra que o apelido "from" falhou e "to" foi tentado.
+// Fallback records that alias "from" failed and "to" was tried.
 func (r *Registry) Fallback(agent, from, to string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.counters["pedagio_fallbacks_total"+labels("agent", agent, "from", from, "to", to)]++
+	r.counters["nautilm_fallbacks_total"+labels("agent", agent, "from", from, "to", to)]++
 }
 
-// Rejected registra pedidos barrados antes de chegar a um modelo (401/403/400).
+// Rejected records requests stopped before reaching a model (401/403/400/429).
 func (r *Registry) Rejected(agent, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.counters["pedagio_rejected_total"+labels("agent", agent, "reason", reason)]++
+	r.counters["nautilm_rejected_total"+labels("agent", agent, "reason", reason)]++
+}
+
+// Masked counts how much sensitive data each rule removed, per agent.
+// Useful to find the agent that keeps sending secrets in prompts.
+func (r *Registry) Masked(agent, rule string, n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["nautilm_masked_total"+labels("agent", agent, "rule", rule)] += float64(n)
+}
+
+// UsageLost counts usage records that could not be stored (Valkey down).
+// They are still in the log ("usage record lost"), so they can be recovered.
+func (r *Registry) UsageLost() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters["nautilm_usage_lost_total{}"]++
 }
 
 func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
@@ -95,6 +128,9 @@ func (r *Registry) Write(w io.Writer) {
 			fmt.Fprintf(w, "# TYPE %s counter\n", name)
 			lastName = name
 		}
+		if strings.HasSuffix(k, "{}") {
+			k = name
+		}
 		fmt.Fprintf(w, "%s %g\n", k, vals[i])
 	}
 }
@@ -110,23 +146,4 @@ func labels(kv ...string) string {
 	}
 	b.WriteByte('}')
 	return b.String()
-}
-
-// Masked conta quantos dados sensíveis cada regra tirou, por agente.
-// Útil para achar o agente que vive mandando segredo no prompt.
-func (r *Registry) Masked(agent, rule string, n int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.counters["pedagio_masked_total"+labels("agent", agent, "rule", rule)] += float64(n)
-}
-
-// Cost soma o custo estimado em USD (tokens × preço do apelido na config).
-// É a métrica do painel de custo: por agente, apelido e modelo.
-func (r *Registry) Cost(agent, alias, model string, usd float64) {
-	if usd <= 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.counters["pedagio_cost_usd_total"+labels("agent", agent, "alias", alias, "model", model)] += usd
 }

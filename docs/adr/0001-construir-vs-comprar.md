@@ -17,7 +17,7 @@ os agentes. Queremos:
 
 ## Opções
 
-| | **Bifrost** (maximhq) | **Agent Router** (ex-Envoy AI Gateway) | **pedagio** (nosso, Go) |
+| | **Bifrost** (maximhq) | **Agent Router** (ex-Envoy AI Gateway) | **nautilm (ex-pedagio)** (nosso, Go) |
 |---|---|---|---|
 | Licença / linguagem | Apache-2.0, Go | Apache-2.0, Go (controller) + Envoy (C++) | nosso, Go stdlib + AWS SDK |
 | API para os agentes | OpenAI-compatible | OpenAI-compatible | OpenAI-compatible |
@@ -40,7 +40,7 @@ Observações:
 
 ## Decisão
 
-**Construir o pedagio**, fino, em Go, mantendo o **contrato OpenAI-compatible
+**Construir o nautilm (ex-pedagio)**, fino, em Go, mantendo o **contrato OpenAI-compatible
 + apelidos** como a coisa que realmente importa.
 
 Por quê:
@@ -59,7 +59,7 @@ Por quê:
 - **Ruim:** somos donos dos bugs de tradução (streaming, tool calling,
   structured output, caching) e da alta disponibilidade.
 - **Saída de emergência:** como os agentes só conhecem *URL + apelido no
-  formato OpenAI*, dá para trocar o pedagio por Bifrost/Agent Router depois
+  formato OpenAI*, dá para trocar o nautilm (ex-pedagio) por Bifrost/Agent Router depois
   **sem mexer em nenhum agente**. Rever esta decisão se a tradução virar um
   fardo ou se a empresa adotar Envoy Gateway.
 

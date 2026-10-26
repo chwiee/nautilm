@@ -1,0 +1,153 @@
+{
+  "title": "nautilm — cost and usage by agent",
+  "uid": "nautilm",
+  "description": "Operations view of the Nautilus LLM Gateway: estimated cost, tokens, latency and protections (quotas, masking). Source: nautilm GET /metrics. For billing (months, CSV), use the nautilm /dashboard.",
+  "tags": ["nautilm", "llm", "cost"],
+  "editable": true,
+  "schemaVersion": 41,
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": {"query": "label_values(nautilm_requests_total, agent)", "refId": "agent"},
+        "definition": "label_values(nautilm_requests_total, agent)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"},
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Estimated cost in the period (USD)",
+      "description": "Tokens × price of the provider+model that served each call (pricing in the nautilm config). Unpriced calls are NOT included: see nautilm_unpriced_calls_total.",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2, "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "sum(increase(nautilm_cost_usd_total{agent=~\"$agent\"}[$__range])) or vector(0)", "instant": true}]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Tokens in the period",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "none", "graphMode": "none", "textMode": "value_and_name"},
+      "targets": [
+        {"refId": "A", "legendFormat": "input", "expr": "sum(increase(nautilm_tokens_total{agent=~\"$agent\",kind=\"input\"}[$__range])) or vector(0)", "instant": true},
+        {"refId": "B", "legendFormat": "output", "expr": "sum(increase(nautilm_tokens_total{agent=~\"$agent\",kind=\"output\"}[$__range])) or vector(0)", "instant": true}
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Model calls",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "none", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "sum(increase(nautilm_requests_total{agent=~\"$agent\"}[$__range])) or vector(0)", "instant": true}]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Calls with errors",
+      "description": "Non-200 status from the provider (every fallback attempt counts).",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+      "targets": [{"refId": "A", "expr": "(sum(increase(nautilm_requests_total{agent=~\"$agent\",status!=\"200\"}[$__range])) or vector(0)) / clamp_min(sum(increase(nautilm_requests_total{agent=~\"$agent\"}[$__range])), 1)", "instant": true}]
+    },
+    {
+      "id": 5, "type": "bargauge", "title": "Cost by agent in the period (USD)",
+      "description": "Who is spending. Compare with each agent's quota (agents.<id>.tokens_per_day).",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2, "min": 0, "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{agent}}", "expr": "sort_desc(sum by (agent) (increase(nautilm_cost_usd_total{agent=~\"$agent\"}[$__range])))", "instant": true}]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Tokens per minute, by agent",
+      "description": "Compare with the per-minute quota (default 200k). An agent in a loop shows up here before it shows up on the bill.",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{agent}}", "expr": "sum by (agent) (rate(nautilm_tokens_total{agent=~\"$agent\",kind=~\"input|output\"}[$__rate_interval])) * 60"}]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Average latency by alias",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{alias}}", "expr": "sum by (alias) (rate(nautilm_request_duration_seconds_sum{agent=~\"$agent\"}[$__rate_interval])) / sum by (alias) (rate(nautilm_request_duration_seconds_count{agent=~\"$agent\"}[$__rate_interval]))"}]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Time to first token (streaming)",
+      "description": "The latency the user feels in a chat.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [{"refId": "A", "legendFormat": "{{alias}}", "expr": "sum by (alias) (rate(nautilm_time_to_first_token_seconds_sum{agent=~\"$agent\"}[$__rate_interval])) / sum by (alias) (rate(nautilm_time_to_first_token_seconds_count{agent=~\"$agent\"}[$__rate_interval]))"}]
+    },
+    {
+      "id": 9, "type": "bargauge", "title": "Blocks by reason (since nautilm started)",
+      "description": "Total since the last start (exact count: increase() would miss rare events whose series is born with a value). quota_minute / quota_day = quota exceeded (429). forbidden_model = alias not allowed. unauthenticated = no credentials. on_behalf_of_not_allowed = a caller tried to bill another agent.",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "orange"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{reason}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (reason, agent) (nautilm_rejected_total{agent=~\"$agent|\"}))"}]
+    },
+    {
+      "id": 10, "type": "bargauge", "title": "Sensitive data masked (since start)",
+      "description": "How many times each rule removed data before the model. An agent with many 'secret' hits is sending logs with passwords: check its tools.",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{rule}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (rule, agent) (nautilm_masked_total{agent=~\"$agent\"}))"}]
+    },
+    {
+      "id": 11, "type": "bargauge", "title": "Fallbacks (since start)",
+      "description": "The main model failed (429/5xx) and nautilm used the next alias.",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "min": 0, "color": {"mode": "fixed", "fixedColor": "red"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"refId": "A", "legendFormat": "{{from}} → {{to}} ({{agent}})", "instant": true, "expr": "sort_desc(sum by (from, to, agent) (nautilm_fallbacks_total{agent=~\"$agent\"}))"}]
+    },
+    {
+      "id": 12, "type": "table", "title": "Detail in the period: agent × provider × model",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "Value #A"}, "properties": [{"id": "displayName", "value": "Cost (USD)"}, {"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}]},
+        {"matcher": {"id": "byName", "options": "Value #B"}, "properties": [{"id": "displayName", "value": "Tokens"}, {"id": "unit", "value": "short"}, {"id": "decimals", "value": 0}]},
+        {"matcher": {"id": "byName", "options": "Value #C"}, "properties": [{"id": "displayName", "value": "Calls"}, {"id": "decimals", "value": 0}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "Cost (USD)", "desc": true}]},
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": true}, "renameByName": {"agent": "Agent", "provider": "Provider", "model": "Model"}}}
+      ],
+      "targets": [
+        {"refId": "A", "format": "table", "instant": true, "expr": "sum by (agent, provider, model) (increase(nautilm_cost_usd_total{agent=~\"$agent\"}[$__range]))"},
+        {"refId": "B", "format": "table", "instant": true, "expr": "sum by (agent, provider, model) (increase(nautilm_tokens_total{agent=~\"$agent\",kind=~\"input|output\"}[$__range]))"},
+        {"refId": "C", "format": "table", "instant": true, "expr": "sum by (agent, provider, model) (increase(nautilm_requests_total{agent=~\"$agent\"}[$__range]))"}
+      ]
+    }
+  ]
+}

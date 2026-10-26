@@ -9,24 +9,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// EventReader é o que o SDK devolve em ConverseStreamOutput.GetStream().
-// Interface própria porque o campo do SDK é privado: assim dá para testar.
+// EventReader is what the SDK returns from ConverseStreamOutput.GetStream().
+// Our own interface because the SDK field is private: this way it is testable.
 type EventReader interface {
 	Events() <-chan types.ConverseStreamOutput
 	Close() error
 	Err() error
 }
 
-// StreamAPI abre o ConverseStream.
+// StreamAPI opens a ConverseStream.
 type StreamAPI interface {
 	ConverseStream(ctx context.Context, in *bedrockruntime.ConverseStreamInput) (EventReader, error)
 }
 
-// sdkStream adapta o cliente do SDK à StreamAPI.
+// sdkStream adapts the SDK client to StreamAPI.
 type sdkStream struct{ c *bedrockruntime.Client }
 
 func (s sdkStream) ConverseStream(ctx context.Context, in *bedrockruntime.ConverseStreamInput) (EventReader, error) {
@@ -37,20 +37,20 @@ func (s sdkStream) ConverseStream(ctx context.Context, in *bedrockruntime.Conver
 	return out.GetStream(), nil
 }
 
-// ChatStream traduz os eventos do ConverseStream em chunks OpenAI:
+// ChatStream translates ConverseStream events into OpenAI chunks:
 //
 //	messageStart                → delta {role: assistant}
-//	contentBlockDelta (texto)   → delta {content}
+//	contentBlockDelta (text)    → delta {content}
 //	contentBlockStart (toolUse) → delta {tool_calls: [{index, id, name, arguments: ""}]}
-//	contentBlockDelta (toolUse) → delta {tool_calls: [{index, arguments: "<pedaço do JSON>"}]}
+//	contentBlockDelta (toolUse) → delta {tool_calls: [{index, arguments: "<piece of the JSON>"}]}
 //	messageStop                 → finish_reason
-//	metadata                    → usage (devolvido ao gateway)
+//	metadata                    → usage (returned to the gateway)
 //
-// Detalhe: o Bedrock numera os blocos de conteúdo (texto e tools juntos);
-// a OpenAI numera só as tool calls (0, 1, 2...). Por isso o mapa toolIdx.
+// Detail: Bedrock numbers content blocks (text and tools together);
+// OpenAI numbers only tool calls (0, 1, 2...). Hence the toolIdx map.
 func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provider.Emit) (*openai.Usage, error) {
 	if p.stream == nil {
-		return nil, provider.Errorf(http.StatusNotImplemented, "unsupported", "streaming não configurado")
+		return nil, provider.Errorf(http.StatusNotImplemented, "unsupported", "streaming not configured")
 	}
 	in, err := buildInput(c)
 	if err != nil {
@@ -106,13 +106,7 @@ func (p *Provider) ChatStream(ctx context.Context, c provider.Call, emit provide
 			ch := chunk(openai.Delta{}, &reason)
 			out = &ch
 		case *types.ConverseStreamOutputMemberMetadata:
-			if u := v.Value.Usage; u != nil {
-				in, o := int(aws.ToInt32(u.InputTokens)), int(aws.ToInt32(u.OutputTokens))
-				usage = &openai.Usage{PromptTokens: in, CompletionTokens: o, TotalTokens: in + o}
-				if cached := int(aws.ToInt32(u.CacheReadInputTokens)); cached > 0 {
-					usage.PromptTokensDetails = &openai.PromptTokensDetails{CachedTokens: cached}
-				}
-			}
+			usage = toUsage(v.Value.Usage)
 		}
 		if out != nil {
 			if err := emit(*out); err != nil {

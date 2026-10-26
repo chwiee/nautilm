@@ -7,15 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-func TestRepasseTrocaModeloEDesligaStream(t *testing.T) {
+func TestPassThroughSwapsModelAndDisablesStream(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&got)
-		w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"oi"},"finish_reason":"stop"}]}`))
+		w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 
@@ -27,17 +27,17 @@ func TestRepasseTrocaModeloEDesligaStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got["model"] != "qwen2.5:7b" || got["stream"] != false || got["max_tokens"] != 100.0 {
-		t.Errorf("corpo enviado: %v", got)
+		t.Errorf("body sent: %v", got)
 	}
 	if got["seed"] != 42.0 {
-		t.Errorf("campo extra (seed) deveria ser repassado: %v", got)
+		t.Errorf("the extra field (seed) must be forwarded: %v", got)
 	}
 	if raw["model"] != "fast" {
-		t.Errorf("não pode alterar o mapa original (o fallback reusa)")
+		t.Errorf("must not change the original map (the fallback reuses it)")
 	}
 }
 
-func TestErroUpstreamPreservaStatus(t *testing.T) {
+func TestUpstreamErrorKeepsStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sobrecarregado", http.StatusServiceUnavailable)
 	}))

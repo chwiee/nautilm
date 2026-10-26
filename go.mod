@@ -1,4 +1,4 @@
-module github.com/chwiee/pedagio
+module github.com/chwiee/nautilm
 
 go 1.26.5
 

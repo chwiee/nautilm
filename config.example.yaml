@@ -1,94 +1,151 @@
-# Exemplo de configuração do pedagio.
-# Copie para config.yaml (que está no .gitignore) e ajuste.
-# Segredos sempre via ${VARIAVEL}, nunca escritos aqui.
+# nautilm (Nautilus LLM Gateway): example config.
+# Copy to config.yaml (gitignored). Secrets always come from ${ENV_VAR}.
+# The file is read in strict mode: unknown keys stop the startup.
 
 listen: ":8080"
 
-# De onde vêm os modelos.
+# Where models run. The provider NAME also identifies "where" in billing:
+# name it after the place (bedrock-us-east-2, anthropic-api, ollama-local).
 providers:
-  bedrock:
+  bedrock-us-east-2:
     type: bedrock
-    region: us-east-2        # a Região selecionada do seu projeto/conta
-  ollama:
-    type: openai             # qualquer API compatível com OpenAI (Ollama, vLLM, LiteLLM...)
+    region: us-east-2            # the project's Region (single Region)
+  ollama-local:
+    type: openai                  # any OpenAI-compatible server
     base_url: http://localhost:11434/v1
-    timeout: 180s
+    timeout: 300s
 
-# Apelidos: é SÓ isto que os agentes conhecem.
-# Trocar o modelo de "smart" = mudar uma linha aqui, zero mudança nos agentes.
+# Aliases: what agents ask for. Switching the model of "smart" = editing one
+# line here; no agent changes.
 models:
   smart:
-    provider: bedrock
-    # Confira o ID exato no console do Bedrock (Model catalog) da sua Região.
-    # IDs com prefixo "us."/"global." são inference profiles cross-Region:
-    # em conta com SCP single-Region (nova experiência AWS) use o ID regional.
+    provider: bedrock-us-east-2
+    # Check the exact ID in the Bedrock console (Model catalog) of your Region.
+    # IDs prefixed with "us."/"global." are cross-Region inference profiles:
+    # in a single-Region account use the regional ID.
     model: anthropic.claude-sonnet-5-5
     max_tokens: 4096
-    fallback: [fast]         # se o Bedrock der 429/5xx, tenta "fast"
-    # USD por milhão de tokens: VALORES DE EXEMPLO, confira a tabela atual em
-    # https://aws.amazon.com/bedrock/pricing/ para o modelo e a sua Região.
-    preco: {entrada: 3.00, saida: 15.00}
+    fallback: [fast]              # on 429/5xx, try "fast"
   fast:
-    provider: bedrock
+    provider: bedrock-us-east-2
     model: amazon.nova-lite-v1:0
     max_tokens: 2048
     fallback: [local]
-    preco: {entrada: 0.06, saida: 0.24}
   local:
-    provider: ollama
+    provider: ollama-local
     model: qwen2.5:7b
     max_tokens: 2048
 
-  # Embeddings (RAG, memória semântica, router). NUNCA têm fallback:
-  # vetores de modelos diferentes não se comparam. Trocar o modelo de
-  # embedding = reindexar tudo no Valkey.
+  # Embeddings NEVER have a fallback: vectors from different models do not
+  # compare. Changing the embedding model = reindexing everything.
   embed:
     type: embedding
-    provider: bedrock
+    provider: bedrock-us-east-2
     model: amazon.titan-embed-text-v2:0
-    dimensions: 1024          # Titan v2: 256, 512 ou 1024
-    preco: {entrada: 0.02}
+    dimensions: 1024              # Titan v2: 256, 512 or 1024
   embed-local:
     type: embedding
-    provider: ollama
-    model: nomic-embed-text    # 768 dimensões
+    provider: ollama-local
+    model: nomic-embed-text
+
+# Price catalog: per PROVIDER + MODEL (not per alias), USD per 1M tokens.
+# EXAMPLE VALUES: check the current price list of each provider
+# (https://aws.amazon.com/bedrock/pricing/ for Bedrock in your Region).
+# When a price changes, ADD a line with a new effective_from: history keeps
+# the old price.
+pricing:
+  - provider: bedrock-us-east-2
+    model: anthropic.claude-sonnet-5-5
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    effective_from: 2026-10-01
+  - provider: bedrock-us-east-2
+    model: amazon.nova-lite-v1:0
+    input: 0.06
+    output: 0.24
+    effective_from: 2026-10-01
+  - provider: bedrock-us-east-2
+    model: amazon.titan-embed-text-v2:0
+    input: 0.02
+    effective_from: 2026-10-01
+  - provider: ollama-local
+    model: "*"                    # every model of this provider
+    free: true                    # own infrastructure: zero on purpose
+
+# true = a model without a price stops the startup (recommended in production).
+# false = warning at startup and "unpriced" in the dashboard (never zero).
+strict_pricing: false
 
 auth:
-  # Em ordem. No EKS: [kubernetes]. Laboratório/CLI: [tokens]. Dev local: [none].
+  # In order. On EKS: [kubernetes]. Outside the cluster: [tokens]. Dev: [none].
   modes: [kubernetes, tokens]
-  audience: pedagio          # audience do token projetado da ServiceAccount
-  tokens:
-    ce-cli: ${PEDAGIO_TOKEN_CE_CLI}
+  audience: nautilm               # audience of the projected ServiceAccount token
+  tokens:                         # one token per agent (outside the cluster)
+    k8s: ${NAUTILM_TOKEN_K8S}
+    mid: ${NAUTILM_TOKEN_MID}
+    marcia: ${NAUTILM_TOKEN_MARCIA}
+    claudia: ${NAUTILM_TOKEN_CLAUDIA}
+    maestro: ${NAUTILM_TOKEN_MAESTRO}
 
-# Quem pode usar o quê. Chave = "namespace/serviceaccount" ou nome do token.
-# tokens_por_minuto / tokens_por_dia: cota própria (0 ou ausente = usa
-# "cotas", -1 = sem limite).
+# Who may use what, and who pays. Key = "namespace/serviceaccount" or token name.
+#   team / cost_center: go into every usage record (split the bill by team).
+#   tokens_per_minute / tokens_per_day: own quota (0 = "quotas", -1 = no limit).
+#   on_behalf_of: may bill a call to the agent it serves (header
+#     X-Nautilm-On-Behalf-Of). Only for the orchestrator.
 agents:
-  observability/kubets:
+  k8s:
     models: [smart, fast, embed]
-  mq/midts:
+    team: ce
+    cost_center: "CC-1001"
+  mid:
     models: [smart, fast, embed]
-    tokens_por_dia: 20000000   # agente mais usado: cota maior
-  ce-cli:
+    team: ce
+    cost_center: "CC-1001"
+    tokens_per_day: 20000000      # busiest agent: bigger daily quota
+  marcia:
+    models: [fast, local, embed-local]
+    team: finance
+    cost_center: "CC-2040"
+  claudia:
     models: [fast, embed]
-    tokens_por_minuto: 50000   # CLI de humano: mais apertado
-  "*":                       # qualquer outro agente autenticado
+    team: support
+    cost_center: "CC-3100"
+    tokens_per_minute: 50000
+  maestro:
     models: [fast, embed]
+    team: platform
+    on_behalf_of: true
+  "*":                            # any other authenticated agent
+    models: [fast, embed]
+    team: unassigned
 
-# ── Proteções: LIGADAS por padrão. Só escreva se quiser mudar algo. ──
+# ── Protections: ON by default. Only write them to change something. ──
 
-# Mascaramento de dados sensíveis ANTES de qualquer modelo (mensagens,
-# resultados e argumentos de tool, embeddings). Regras embutidas:
-#   chave_privada, jwt, aws_key, bearer, segredo, cpf, cnpj, cartao, email
-mascarar:
-  desligar: []                 # ex: [email] se o agente PRECISA ver e-mails
-  extra: []                    # ex: [{nome: matricula, regex: 'MAT-\d{6}'}]
-  # desligado: true            # desliga tudo (não recomendado)
+# Sensitive data masking BEFORE any model (messages, tool results and
+# arguments, embeddings). Built-in rules:
+#   private_key, jwt, aws_key, bearer, secret, cpf, cnpj, credit_card, email
+masking:
+  disable: []                     # e.g. [email] if the agent NEEDS to see e-mails
+  extra: []                       # e.g. [{name: employee_id, regex: 'MAT-\d{6}'}]
+  # disabled: true                # turns everything off (not recommended)
 
-# Cota de tokens (entrada + saída) por agente. Estourou → 429 + Retry-After,
-# sem fallback. Padrão: 200 mil/minuto e 10 milhões/dia por agente.
-cotas:
-  tokens_por_minuto: 200000
-  tokens_por_dia: 10000000
-  valkey_url: ${VALKEY_URL}    # vazio = memória (1 réplica); com várias réplicas use o Valkey
-  # desligado: true
+# Token quota (input + output) per agent. Exceeded → 429 + Retry-After, no
+# fallback. Default: 200k/minute and 10M/day per agent.
+quotas:
+  tokens_per_minute: 200000
+  tokens_per_day: 10000000
+  # disabled: true
+
+# Usage ledger: daily totals per agent × team × provider × model.
+usage:
+  retention_days: 400
+  # disabled: true
+
+# Token for /v1/usage and the /dashboard data. Empty = usage API disabled.
+dashboard:
+  token: ${NAUTILM_DASHBOARD_TOKEN}
+
+# Shared by quotas and the usage ledger. Empty = in memory (single replica).
+valkey_url: ${VALKEY_URL}

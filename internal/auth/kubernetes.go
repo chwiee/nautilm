@@ -14,23 +14,23 @@ import (
 	"time"
 )
 
-// Caminhos padrão do token/CA montados em todo pod.
+// Default token/CA paths mounted in every pod.
 const (
 	saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 
-// Kubernetes valida tokens de ServiceAccount via TokenReview, só com stdlib
-// (sem client-go: menos dependência, imagem menor).
+// Kubernetes validates ServiceAccount tokens via TokenReview using only the
+// stdlib (no client-go: fewer dependencies, smaller image).
 //
-// O pedagio precisa da ClusterRole "system:auth-delegator" (permite criar
-// TokenReviews) — está em deployments/k8s/pedagio.yaml.
+// nautilm needs the "system:auth-delegator" ClusterRole (allows creating
+// TokenReviews): see deployments/k8s/nautilm.yaml.
 type Kubernetes struct {
-	APIServer string // padrão: https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT
-	Audience  string // o token do agente precisa ter esta audience
+	APIServer string // default: https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT
+	Audience  string // the agent token must carry this audience
 	TTL       time.Duration
 
 	http      *http.Client
-	readToken func() (string, error) // token do PRÓPRIO pedagio (é renovado no disco)
+	readToken func() (string, error) // nautilm's OWN token (renewed on disk)
 
 	mu    sync.Mutex
 	cache map[[32]byte]cached
@@ -41,15 +41,15 @@ type cached struct {
 	expires time.Time
 }
 
-// NewKubernetesInCluster configura a partir do ambiente do pod.
+// NewKubernetesInCluster configures itself from the pod environment.
 func NewKubernetesInCluster(audience string) (*Kubernetes, error) {
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	if host == "" {
-		return nil, fmt.Errorf("auth kubernetes: KUBERNETES_SERVICE_HOST vazio (rodando fora do cluster? use auth.modes: [tokens])")
+		return nil, fmt.Errorf("auth kubernetes: KUBERNETES_SERVICE_HOST is empty (running outside the cluster? use auth.modes: [tokens])")
 	}
 	ca, err := os.ReadFile(saDir + "/ca.crt")
 	if err != nil {
-		return nil, fmt.Errorf("auth kubernetes: lendo CA: %w", err)
+		return nil, fmt.Errorf("auth kubernetes: reading CA: %w", err)
 	}
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(ca)
@@ -96,7 +96,7 @@ func (k *Kubernetes) review(tok string) (Identity, error) {
 	}
 	own, err := k.readToken()
 	if err != nil {
-		return Identity{}, fmt.Errorf("auth kubernetes: token próprio: %w", err)
+		return Identity{}, fmt.Errorf("auth kubernetes: own token: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+own)
 	req.Header.Set("Content-Type", "application/json")
@@ -106,7 +106,7 @@ func (k *Kubernetes) review(tok string) (Identity, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return Identity{}, fmt.Errorf("auth kubernetes: TokenReview HTTP %d (falta a ClusterRole system:auth-delegator?)", resp.StatusCode)
+		return Identity{}, fmt.Errorf("auth kubernetes: TokenReview HTTP %d (missing ClusterRole system:auth-delegator?)", resp.StatusCode)
 	}
 	var out struct {
 		Status struct {
@@ -118,16 +118,16 @@ func (k *Kubernetes) review(tok string) (Identity, error) {
 		} `json:"status"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return Identity{}, fmt.Errorf("auth kubernetes: resposta: %w", err)
+		return Identity{}, fmt.Errorf("auth kubernetes: response: %w", err)
 	}
 	if !out.Status.Authenticated {
 		return Identity{}, ErrInvalid
 	}
-	// username = system:serviceaccount:<namespace>:<nome>
+	// username = system:serviceaccount:<namespace>:<name>
 	const prefix = "system:serviceaccount:"
 	u := out.Status.User.Username
 	if !strings.HasPrefix(u, prefix) {
-		return Identity{}, ErrInvalid // só ServiceAccounts, não usuários humanos
+		return Identity{}, ErrInvalid // ServiceAccounts only, not human users
 	}
 	return Identity{Agent: strings.Replace(strings.TrimPrefix(u, prefix), ":", "/", 1), Method: "kubernetes"}, nil
 }
@@ -142,8 +142,8 @@ func (k *Kubernetes) fromCache(key [32]byte) (Identity, bool) {
 	return c.id, true
 }
 
-// toCache evita um TokenReview por chamada de LLM. TTL curto (1 min) para
-// que uma ServiceAccount removida perca acesso rápido.
+// toCache avoids one TokenReview per LLM call. Short TTL (1 min) so a
+// removed ServiceAccount loses access quickly.
 func (k *Kubernetes) toCache(key [32]byte, id Identity) {
 	ttl := k.TTL
 	if ttl == 0 {
@@ -152,7 +152,7 @@ func (k *Kubernetes) toCache(key [32]byte, id Identity) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.cache == nil || len(k.cache) > 10_000 {
-		k.cache = map[[32]byte]cached{} // limpeza simples: zera tudo
+		k.cache = map[[32]byte]cached{} // simple cleanup: drop everything
 	}
 	k.cache[key] = cached{id: id, expires: time.Now().Add(ttl)}
 }

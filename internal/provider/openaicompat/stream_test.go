@@ -8,15 +8,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-const upstreamSSE = `: comentário de keep-alive
+const upstreamSSE = `: keep-alive comment
 
 data: {"id":"up-1","model":"qwen","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"hmm"}}]}
 
-data: {"id":"up-1","model":"qwen","choices":[{"index":0,"delta":{"content":"oi"}}]}
+data: {"id":"up-1","model":"qwen","choices":[{"index":0,"delta":{"content":"hi"}}]}
 
 data: {"id":"up-1","model":"qwen","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
@@ -26,7 +26,7 @@ data: [DONE]
 
 `
 
-func TestStreamRepasse(t *testing.T) {
+func TestStreamPassThrough(t *testing.T) {
 	var sent map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&sent)
@@ -44,29 +44,29 @@ func TestStreamRepasse(t *testing.T) {
 	}
 
 	if sent["stream"] != true {
-		t.Errorf("upstream deveria receber stream=true: %v", sent)
+		t.Errorf("the upstream must receive stream=true: %v", sent)
 	}
 	if so, _ := sent["stream_options"].(map[string]any); so["include_usage"] != true {
-		t.Errorf("pedagio sempre pede usage ao upstream: %v", sent["stream_options"])
+		t.Errorf("nautilm always asks the upstream for usage: %v", sent["stream_options"])
 	}
 	if len(chunks) != 3 {
-		t.Fatalf("esperava 3 chunks (o de usage fica com o gateway), veio %d", len(chunks))
+		t.Fatalf("expected 3 chunks (the usage one stays with the gateway), got %d", len(chunks))
 	}
 	for _, c := range chunks {
 		if c["id"] != "chatcmpl-gw" || c["model"] != "local" {
-			t.Errorf("id/model não trocados: %v", c)
+			t.Errorf("id/model not swapped: %v", c)
 		}
 	}
 	delta := chunks[0]["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
 	if delta["reasoning_content"] != "hmm" {
-		t.Errorf("campo desconhecido deveria passar intacto: %v", delta)
+		t.Errorf("an unknown field must pass intact: %v", delta)
 	}
 	if usage == nil || usage.TotalTokens != 6 {
 		t.Errorf("usage: %+v", usage)
 	}
 }
 
-func TestStreamErroNaAbertura(t *testing.T) {
+func TestStreamErrorWhenOpening(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "limite", http.StatusTooManyRequests)
 	}))
@@ -76,6 +76,6 @@ func TestStreamErroNaAbertura(t *testing.T) {
 		provider.Call{Raw: map[string]any{}, Request: &openai.ChatRequest{}},
 		func(any) error { called = true; return nil })
 	if pe, ok := err.(*provider.Error); !ok || pe.Status != 429 || called {
-		t.Errorf("err=%v emit chamado=%v", err, called)
+		t.Errorf("err=%v emit called=%v", err, called)
 	}
 }

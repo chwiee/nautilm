@@ -1,15 +1,15 @@
-// Package bedrock traduz o formato OpenAI para a Converse API do Amazon
-// Bedrock e volta. Baseado no submódulo bedrock do gotoolkit.
+// Package bedrock translates the OpenAI format to the Amazon Bedrock
+// Converse API and back.
 //
-// Credenciais: cadeia padrão da AWS (Pod Identity, IRSA, perfil local).
-// SÓ o pedagio precisa de permissão no Bedrock — esse é o objetivo:
+// Credentials: the default AWS chain (Pod Identity, IRSA, local profile).
+// ONLY nautilm needs Bedrock permissions; that is the whole point:
 //
-//	bedrock:InvokeModel                   (Converse)
-//	bedrock:InvokeModelWithResponseStream (ConverseStream, quando o agente pede stream)
+//	bedrock:InvokeModel                   (Converse, embeddings)
+//	bedrock:InvokeModelWithResponseStream (ConverseStream, when the agent streams)
 //
-// Por que Converse e não InvokeModel? Um formato só de mensagens e de tool
-// calling para todos os modelos (Claude, Nova, Llama...). Trocar de modelo é
-// trocar o ID no config do pedagio.
+// Why Converse and not InvokeModel? One message and tool-calling format for
+// every model (Claude, Nova, Llama...). Switching models is switching the ID
+// in the nautilm config.
 package bedrock
 
 import (
@@ -28,26 +28,26 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
 type Config struct {
-	Region string // vazio = AWS_REGION
+	Region string // empty = AWS_REGION
 }
 
-// Converser é a parte do SDK que usamos — interface para dar para testar.
+// Converser is the part of the SDK we use: an interface so it can be tested.
 type Converser interface {
 	Converse(ctx context.Context, in *bedrockruntime.ConverseInput, opts ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 }
 
 type Provider struct {
 	api    Converser
-	stream StreamAPI // nil = sem streaming real (o gateway simula)
-	invoke Invoker   // nil = sem embeddings
+	stream StreamAPI // nil = no real streaming (the gateway simulates it)
+	invoke Invoker   // nil = no embeddings
 }
 
-// New carrega as credenciais padrão da AWS.
+// New loads the default AWS credentials.
 func New(ctx context.Context, cfg Config) (*Provider, error) {
 	var opts []func(*config.LoadOptions) error
 	if cfg.Region != "" {
@@ -55,7 +55,7 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 	awsCfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("bedrock: carregando credenciais AWS: %w", err)
+		return nil, fmt.Errorf("bedrock: loading AWS credentials: %w", err)
 	}
 	client := bedrockruntime.NewFromConfig(awsCfg)
 	p := NewWithAPI(client, sdkStream{client})
@@ -63,7 +63,7 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	return p, nil
 }
 
-// NewWithAPI injeta os clientes (testes). stream pode ser nil.
+// NewWithAPI injects the clients (tests). stream may be nil.
 func NewWithAPI(api Converser, stream StreamAPI) *Provider {
 	return &Provider{api: api, stream: stream}
 }
@@ -80,18 +80,18 @@ func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatRespo
 	return parseOutput(c.Model, out)
 }
 
-// buildInput faz a tradução de ida. As diferenças que importam:
+// buildInput does the outbound translation. The differences that matter:
 //
-//  1. System prompt NÃO é mensagem: vai no campo System.
-//  2. Só existem user e assistant. Resultado de tool é um bloco toolResult
-//     DENTRO de uma mensagem user.
-//  3. Papéis precisam alternar. Mensagens seguidas do mesmo papel (ex: dois
-//     resultados de tool) são fundidas numa só.
-//  4. Argumentos de tool na OpenAI são string JSON; na Converse, documento.
+//  1. The system prompt is NOT a message: it goes in the System field.
+//  2. Only user and assistant exist. A tool result is a toolResult block
+//     INSIDE a user message.
+//  3. Roles must alternate. Consecutive messages with the same role (e.g.
+//     two tool results) are merged into one.
+//  4. Tool arguments are a JSON string in OpenAI; a document in Converse.
 func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 	r := c.Request
 	if r.ResponseFormat != nil && r.ResponseFormat.Type == "json_schema" {
-		return nil, provider.Errorf(http.StatusBadRequest, "unsupported", "response_format json_schema ainda não é suportado no provider bedrock")
+		return nil, provider.Errorf(http.StatusBadRequest, "unsupported", "response_format json_schema is not supported by the bedrock provider yet")
 	}
 
 	in := &bedrockruntime.ConverseInput{ModelId: aws.String(c.Model)}
@@ -114,7 +114,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 
 	for i, m := range r.Messages {
 		if m.Content.HasNonText {
-			return nil, provider.Errorf(http.StatusBadRequest, "unsupported", "mensagem %d: só conteúdo de texto é suportado (imagens ainda não)", i)
+			return nil, provider.Errorf(http.StatusBadRequest, "unsupported", "message %d: only text content is supported (no images yet)", i)
 		}
 		var role types.ConversationRole
 		var blocks []types.ContentBlock
@@ -135,7 +135,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 			for _, tc := range m.ToolCalls {
 				args, err := argsDoc(tc.Function.Arguments)
 				if err != nil {
-					return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "argumentos da tool %s não são JSON: %v", tc.Function.Name, err)
+					return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "arguments of tool %s are not JSON: %v", tc.Function.Name, err)
 				}
 				blocks = append(blocks, &types.ContentBlockMemberToolUse{Value: types.ToolUseBlock{
 					ToolUseId: aws.String(tc.ID), Name: aws.String(tc.Function.Name), Input: document.NewLazyDocument(args),
@@ -148,7 +148,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 				Content:   []types.ToolResultContentBlock{&types.ToolResultContentBlockMemberText{Value: nonEmpty(m.Content.Text)}},
 			}})
 		default:
-			return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "papel desconhecido %q", m.Role)
+			return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "unknown role %q", m.Role)
 		}
 		if len(blocks) == 0 {
 			continue
@@ -160,7 +160,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 		in.Messages = append(in.Messages, types.Message{Role: role, Content: blocks})
 	}
 	if len(in.Messages) == 0 {
-		return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "nenhuma mensagem user/assistant")
+		return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "no user/assistant message")
 	}
 
 	if len(r.Tools) > 0 {
@@ -168,7 +168,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 		for _, t := range r.Tools {
 			schema, err := schemaDoc(t.Function.Parameters)
 			if err != nil {
-				return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "schema da tool %s: %v", t.Function.Name, err)
+				return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "schema of tool %s: %v", t.Function.Name, err)
 			}
 			tc.Tools = append(tc.Tools, &types.ToolMemberToolSpec{Value: types.ToolSpecification{
 				Name:        aws.String(t.Function.Name),
@@ -183,8 +183,8 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 }
 
 // toolChoice: "auto" → Auto, "required" → Any, {"function":{"name":X}} → Tool X.
-// "none" não existe na Converse: fica como auto (as tools precisam continuar
-// declaradas se o histórico tiver toolUse).
+// "none" does not exist in Converse: it stays auto (tools must remain
+// declared if the history has toolUse blocks).
 func toolChoice(v any) types.ToolChoice {
 	switch x := v.(type) {
 	case string:
@@ -198,14 +198,14 @@ func toolChoice(v any) types.ToolChoice {
 			}
 		}
 	}
-	return nil // nil = auto (padrão da Converse)
+	return nil // nil = auto (Converse default)
 }
 
-// parseOutput faz a tradução de volta.
+// parseOutput does the inbound translation.
 func parseOutput(model string, out *bedrockruntime.ConverseOutput) (*openai.ChatResponse, error) {
 	msg, ok := out.Output.(*types.ConverseOutputMemberMessage)
 	if !ok {
-		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "saída inesperada do Bedrock (stopReason=%s)", out.StopReason)
+		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "unexpected Bedrock output (stopReason=%s)", out.StopReason)
 	}
 	res := openai.ResponseMessage{Role: "assistant"}
 	var text strings.Builder
@@ -214,13 +214,13 @@ func parseOutput(model string, out *bedrockruntime.ConverseOutput) (*openai.Chat
 		case *types.ContentBlockMemberText:
 			text.WriteString(v.Value)
 		case *types.ContentBlockMemberToolUse:
-			// O "document" do SDK já sabe se serializar em JSON — é exatamente
-			// o que a OpenAI quer em arguments (string JSON).
+			// The SDK document already knows how to marshal itself to JSON:
+			// exactly what OpenAI wants in arguments (a JSON string).
 			raw := []byte("{}")
 			if v.Value.Input != nil {
 				b, err := v.Value.Input.MarshalSmithyDocument()
 				if err != nil {
-					return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "argumentos de %s: %v", aws.ToString(v.Value.Name), err)
+					return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "arguments of %s: %v", aws.ToString(v.Value.Name), err)
 				}
 				if len(b) > 0 && string(b) != "null" {
 					raw = b
@@ -236,20 +236,31 @@ func parseOutput(model string, out *bedrockruntime.ConverseOutput) (*openai.Chat
 		res.Content = &s
 	}
 
-	resp := &openai.ChatResponse{
+	return &openai.ChatResponse{
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   model,
 		Choices: []openai.Choice{{Message: res, FinishReason: finishReason(out.StopReason)}},
+		Usage:   toUsage(out.Usage),
+	}, nil
+}
+
+// toUsage maps Bedrock token usage to the normalized nautilm usage.
+// Bedrock reports inputTokens WITHOUT the cache reads/writes; OpenAI counts
+// them inside prompt_tokens. We follow OpenAI so the price math is the same
+// for every provider (see openai.Usage).
+func toUsage(u *types.TokenUsage) *openai.Usage {
+	if u == nil {
+		return nil
 	}
-	if u := out.Usage; u != nil {
-		in, outT := int(aws.ToInt32(u.InputTokens)), int(aws.ToInt32(u.OutputTokens))
-		resp.Usage = &openai.Usage{PromptTokens: in, CompletionTokens: outT, TotalTokens: in + outT}
-		if cached := int(aws.ToInt32(u.CacheReadInputTokens)); cached > 0 {
-			resp.Usage.PromptTokensDetails = &openai.PromptTokensDetails{CachedTokens: cached}
-		}
+	read, write := int(aws.ToInt32(u.CacheReadInputTokens)), int(aws.ToInt32(u.CacheWriteInputTokens))
+	in := int(aws.ToInt32(u.InputTokens)) + read + write
+	out := int(aws.ToInt32(u.OutputTokens))
+	usage := &openai.Usage{PromptTokens: in, CompletionTokens: out, TotalTokens: in + out}
+	if read > 0 || write > 0 {
+		usage.PromptTokensDetails = &openai.PromptTokensDetails{CachedTokens: read, CacheWriteTokens: write}
 	}
-	return resp, nil
+	return usage
 }
 
 func finishReason(r types.StopReason) string {
@@ -265,13 +276,13 @@ func finishReason(r types.StopReason) string {
 	}
 }
 
-// mapError converte erros da AWS em status HTTP para o gateway decidir
-// entre devolver ao agente ou tentar o fallback.
+// mapError turns AWS errors into HTTP statuses so the gateway can decide
+// between returning to the agent or trying the fallback.
 func mapError(err error) error {
 	var api smithy.APIError
 	if !errors.As(err, &api) {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return provider.Errorf(http.StatusGatewayTimeout, "timeout", "Bedrock não respondeu a tempo")
+			return provider.Errorf(http.StatusGatewayTimeout, "timeout", "Bedrock did not answer in time")
 		}
 		return provider.Errorf(http.StatusBadGateway, "upstream_error", "%v", err)
 	}
@@ -286,15 +297,15 @@ func mapError(err error) error {
 	case "ServiceUnavailableException", "ModelNotReadyException", "InternalServerException":
 		status = http.StatusServiceUnavailable
 	case "AccessDeniedException", "ResourceNotFoundException":
-		// Erro de configuração do PEDAGIO (IAM ou modelo não habilitado),
-		// não do agente: 502 e tenta o fallback.
+		// A NAUTILM configuration error (IAM or model not enabled), not the
+		// agent's: 502 and try the fallback.
 		status = http.StatusBadGateway
 	}
 	return provider.Errorf(status, api.ErrorCode(), "%s", api.ErrorMessage())
 }
 
-// argsDoc converte a string JSON de argumentos em valor genérico. O
-// "document" do SDK precisa de map/slice, não de bytes.
+// argsDoc turns the JSON arguments string into a generic value. The SDK
+// document needs map/slice, not bytes.
 func argsDoc(s string) (any, error) {
 	if strings.TrimSpace(s) == "" {
 		return map[string]any{}, nil
@@ -313,7 +324,7 @@ func schemaDoc(raw json.RawMessage) (any, error) {
 	return v, err
 }
 
-// A Converse rejeita blocos de texto vazios.
+// Converse rejects empty text blocks.
 func nonEmpty(s string) string {
 	if s == "" {
 		return " "
@@ -321,5 +332,5 @@ func nonEmpty(s string) string {
 	return s
 }
 
-// WithInvoker injeta o cliente de InvokeModel (embeddings) — testes.
+// WithInvoker injects the InvokeModel client (embeddings): tests.
 func (p *Provider) WithInvoker(i Invoker) *Provider { p.invoke = i; return p }

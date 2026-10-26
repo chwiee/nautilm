@@ -1,23 +1,19 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log/slog"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/chwiee/pedagio/internal/auth"
-	"github.com/chwiee/pedagio/internal/config"
-	"github.com/chwiee/pedagio/internal/metrics"
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/config"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// spy guarda o que o provider RECEBEU: é isso que o modelo veria.
+// spy keeps what the provider RECEIVED: that is what the model would see.
 type spy struct {
 	call  provider.Call
 	input []string
@@ -38,101 +34,90 @@ func (s *spy) Embed(_ context.Context, c provider.EmbedCall) ([][]float32, *open
 	return out, &openai.Usage{}, nil
 }
 
-func setupSpy(t *testing.T, extra string) (*httptest.Server, *spy, *metrics.Registry) {
+func setupSpy(t *testing.T, extra string) (testEnv, *spy) {
 	t.Helper()
-	cfg, err := config.Parse([]byte(embedConfig + extra))
-	if err != nil {
-		t.Fatal(err)
-	}
 	s := &spy{}
-	m := metrics.New()
-	gw := New(cfg, map[string]provider.Provider{"a": s}, auth.Chain{auth.NewTokens(cfg.Auth.Tokens)}, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv := httptest.NewServer(gw.Handler())
-	t.Cleanup(srv.Close)
-	return srv, s, m
+	return setupCfg(t, testConfig+extra, map[string]provider.Provider{"a": s, "b": &fake{}}), s
 }
 
-const chatComSegredos = `{"model":"smart","messages":[
- {"role":"system","content":"você ajuda o time"},
- {"role":"user","content":[{"type":"text","text":"meu cpf é 123.456.789-09 e a senha=hunter2"}]},
+const chatWithSecrets = `{"model":"smart","messages":[
+ {"role":"system","content":"you help the team"},
+ {"role":"user","content":[{"type":"text","text":"my cpf is 123.456.789-09 and senha=hunter2"}]},
  {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"logs","arguments":"{\"token\":\"abc123secret\"}"}}]},
- {"role":"tool","tool_call_id":"c1","content":"conectando com AKIAABCDEFGHIJKLMNOP em ana@empresa.com"}
+ {"role":"tool","tool_call_id":"c1","content":"connecting with AKIAABCDEFGHIJKLMNOP as ana@company.com"}
 ],"tools":[{"type":"function","function":{"name":"logs","parameters":{"type":"object","properties":{"token":{"type":"string"}}}}}]}`
 
-func TestChatMascaraAntesDoProvider(t *testing.T) {
-	srv, s, m := setupSpy(t, "")
-	resp := postPath(t, srv, "/v1/chat/completions", chatComSegredos)
+func TestChatMasksBeforeTheProvider(t *testing.T) {
+	env, s := setupSpy(t, "")
+	resp := post(t, env.srv, "tok-k8s", chatWithSecrets)
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d: %s", resp.StatusCode, b)
 	}
 
-	// 1) O que vai para o provider openaicompat (mapa cru)
+	// 1) What goes to the openaicompat provider (raw map)
 	raw, _ := json.Marshal(s.call.Raw)
-	// 2) O que vai para o Bedrock (struct)
+	// 2) What goes to Bedrock (struct)
 	st, _ := json.Marshal(s.call.Request.Messages)
 	for name, got := range map[string]string{"raw": string(raw), "struct": string(st)} {
-		for _, leak := range []string{"123.456.789-09", "hunter2", "abc123secret", "AKIAABCDEFGHIJKLMNOP", "ana@empresa.com"} {
+		for _, leak := range []string{"123.456.789-09", "hunter2", "abc123secret", "AKIAABCDEFGHIJKLMNOP", "ana@company.com"} {
 			if strings.Contains(got, leak) {
-				t.Errorf("%s: vazou %q", name, leak)
+				t.Errorf("%s: leaked %q", name, leak)
 			}
 		}
-		for _, mark := range []string{"[CPF]", "[SEGREDO]", "[AWS_KEY]", "[EMAIL]"} {
+		for _, mark := range []string{"[CPF]", "[SECRET]", "[AWS_KEY]", "[EMAIL]"} {
 			if !strings.Contains(got, mark) {
-				t.Errorf("%s: faltou %s em %s", name, mark, got)
+				t.Errorf("%s: missing %s in %s", name, mark, got)
 			}
 		}
 	}
-	// Estrutura intacta: tool_call_id, definição da tool e o parâmetro "token".
+	// Structure intact: tool_call_id, the tool definition and its "token" parameter.
 	if s.call.Request.Messages[3].ToolCallID != "c1" || len(s.call.Request.Tools) != 1 {
-		t.Errorf("estrutura mudou: %+v", s.call.Request.Messages[3])
+		t.Errorf("structure changed: %+v", s.call.Request.Messages[3])
 	}
-	if !strings.Contains(string(mustJSON(s.call.Raw["tools"])), `"token":{"type":"string"}`) {
-		t.Error("definição da tool não pode ser mascarada")
+	tools, _ := json.Marshal(s.call.Raw["tools"])
+	if !strings.Contains(string(tools), `"token":{"type":"string"}`) {
+		t.Error("tool definitions must not be masked")
 	}
-	// Agente fica sabendo, métrica conta (sem o valor!).
-	if h := resp.Header.Get("X-Pedagio-Masked"); h != "aws_key=1,cpf=1,email=1,segredo=2" {
+	// The agent is told, the metric counts (never the value).
+	if h := resp.Header.Get("X-Nautilm-Masked"); h != "aws_key=1,cpf=1,email=1,secret=2" {
 		t.Errorf("header = %q", h)
 	}
-	var buf bytes.Buffer
-	m.Write(&buf)
-	if !strings.Contains(buf.String(), `pedagio_masked_total{agent="k",rule="segredo"} 2`) {
-		t.Errorf("métrica:\n%s", buf.String())
+	if !strings.Contains(metricsText(env.metrics), `nautilm_masked_total{agent="k8s",rule="secret"} 2`) {
+		t.Errorf("metric:\n%s", metricsText(env.metrics))
 	}
 }
 
-func TestChatSemDadoSensivelNaoMexe(t *testing.T) {
-	srv, s, _ := setupSpy(t, "")
-	resp := postPath(t, srv, "/v1/chat/completions", `{"model":"smart","messages":[{"role":"user","content":"pod checkout em CrashLoopBackOff"}]}`)
-	if resp.Header.Get("X-Pedagio-Masked") != "" || s.call.Request.Messages[0].Content.Text != "pod checkout em CrashLoopBackOff" {
-		t.Errorf("não devia mexer: %q", s.call.Request.Messages[0].Content.Text)
+func TestChatWithoutSensitiveDataIsUntouched(t *testing.T) {
+	env, s := setupSpy(t, "")
+	resp := post(t, env.srv, "tok-k8s", `{"model":"smart","messages":[{"role":"user","content":"pod checkout in CrashLoopBackOff"}]}`)
+	if resp.Header.Get("X-Nautilm-Masked") != "" || s.call.Request.Messages[0].Content.Text != "pod checkout in CrashLoopBackOff" {
+		t.Errorf("must not change: %q", s.call.Request.Messages[0].Content.Text)
 	}
 }
 
-func TestEmbeddingsMascara(t *testing.T) {
-	srv, s, _ := setupSpy(t, "")
-	postPath(t, srv, "/v1/embeddings", `{"model":"embed","input":["cliente 123.456.789-09","normal"]}`)
-	if s.input[0] != "cliente [CPF]" || s.input[1] != "normal" {
+func TestEmbeddingsAreMasked(t *testing.T) {
+	env, s := setupSpy(t, "")
+	postEmbed(t, env, "tok-k8s", `{"model":"embed","input":["customer 123.456.789-09","normal"]}`)
+	if s.input[0] != "customer [CPF]" || s.input[1] != "normal" {
 		t.Errorf("input = %q", s.input)
 	}
 }
 
-func TestMascararAjustavel(t *testing.T) {
-	srv, s, _ := setupSpy(t, "mascarar: {desligar: [email], extra: [{nome: matricula, regex: 'MAT-\\d{6}'}]}\n")
-	postPath(t, srv, "/v1/chat/completions", `{"model":"smart","messages":[{"role":"user","content":"ana@x.com MAT-123456"}]}`)
-	if got := s.call.Request.Messages[0].Content.Text; got != "ana@x.com [MATRICULA]" {
+func TestMaskingIsConfigurable(t *testing.T) {
+	env, s := setupSpy(t, "masking: {disable: [email], extra: [{name: employee_id, regex: 'MAT-\\d{6}'}]}\n")
+	post(t, env.srv, "tok-k8s", fmt.Sprintf(`{"model":"smart","messages":[{"role":"user","content":%q}]}`, "ana@x.com MAT-123456"))
+	if got := s.call.Request.Messages[0].Content.Text; got != "ana@x.com [EMPLOYEE_ID]" {
 		t.Errorf("got %q", got)
 	}
 
-	srv, s, _ = setupSpy(t, "mascarar: {desligado: true}\n")
-	postPath(t, srv, "/v1/chat/completions", `{"model":"smart","messages":[{"role":"user","content":"123.456.789-09"}]}`)
+	env, s = setupSpy(t, "masking: {disabled: true}\n")
+	post(t, env.srv, "tok-k8s", `{"model":"smart","messages":[{"role":"user","content":"123.456.789-09"}]}`)
 	if got := s.call.Request.Messages[0].Content.Text; got != "123.456.789-09" {
-		t.Errorf("desligado mexeu: %q", got)
+		t.Errorf("disabled changed it: %q", got)
 	}
 
-	if _, err := config.Parse([]byte(embedConfig + "mascarar: {desligar: [cpff]}\n")); err == nil || !strings.Contains(err.Error(), "cpff") {
-		t.Errorf("erro de config deveria citar a regra: %v", err)
+	if _, err := config.Parse([]byte(testConfig + "masking: {disable: [cpff]}\n")); err == nil || !strings.Contains(err.Error(), "cpff") {
+		t.Errorf("the config error must name the rule: %v", err)
 	}
 }
-
-func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }

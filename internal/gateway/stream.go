@@ -8,31 +8,33 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chwiee/pedagio/internal/auth"
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/auth"
+	"github.com/chwiee/nautilm/internal/pricing"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// streamResult resume o que aconteceu num pedido com stream, para log.
+// streamResult sums up what happened in a streaming request, for the log.
 type streamResult struct {
 	used    served
 	usage   *openai.Usage
-	mode    string        // "real" (provider faz streaming) ou "simulado"
-	ttft    time.Duration // tempo até o 1º chunk chegar ao agente
-	started bool          // já mandamos bytes ao agente?
+	cost    pricing.Result
+	mode    string        // "real" (the provider streams) or "simulated"
+	ttft    time.Duration // time until the 1st chunk reached the agent
+	started bool          // did we already send bytes to the agent?
 	err     error
 }
 
-// streamChain é o callChain do streaming. A diferença importante:
+// streamChain is callChain for streaming. The important difference:
 //
-//	fallback só é possível ANTES do primeiro byte ir para o agente.
+//	fallback is only possible BEFORE the first byte reaches the agent.
 //
-// Enquanto o provider não emitiu nada (erro de conexão, 429, 5xx na
-// abertura), tentamos o próximo apelido normalmente. Depois que o primeiro
-// chunk saiu, o status HTTP 200 já foi enviado: um erro vira um evento
-// "data: {"error": ...}" e o stream termina.
-func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id auth.Identity, req *openai.ChatRequest,
-	raw map[string]any, h http.Header, callID string, includeUsage bool) streamResult {
+// While the provider has emitted nothing (connection error, 429, 5xx when
+// opening), we try the next alias as usual. After the first chunk, the HTTP
+// 200 status is already sent: an error becomes a "data: {"error": ...}"
+// event and the stream ends.
+func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id auth.Identity, b billing, req *openai.ChatRequest,
+	raw map[string]any, h http.Header, callID string, includeUsage bool, trace string) streamResult {
 
 	chain := g.cfg.Chain(req.Model)
 	start := time.Now()
@@ -40,7 +42,7 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 	for i, alias := range chain {
 		m := g.cfg.Models[alias]
 		if i > 0 {
-			g.metrics.Fallback(id.Agent, chain[i-1], alias)
+			g.metrics.Fallback(b.agent, chain[i-1], alias)
 			g.log.Warn("fallback", "agent", id.Agent, "from", chain[i-1], "to", alias, "error", res.err, "stream", true)
 		}
 		used := served{alias: alias, provider: m.Provider, model: m.Model}
@@ -58,7 +60,7 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 			res.mode = "real"
 			u, err = s.ChatStream(ctx, call, sw.emit)
 		} else {
-			res.mode = "simulado"
+			res.mode = "simulated"
 			u, err = simulate(ctx, g.providers[m.Provider], call, sw.emit)
 		}
 
@@ -66,18 +68,17 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 		if err != nil {
 			status = asProviderError(err).Status
 		}
-		in, out, cached := usage(u)
-		g.metrics.Call(id.Agent, alias, m.Model, status, time.Since(t0), in, out, cached)
-		g.metrics.Cost(id.Agent, alias, m.Model, m.Preco.Custo(in, out))
+		// Tokens spent in a stream that broke in the middle are still billed.
+		res.cost = g.record(ctx, b, "chat", used, status, time.Since(t0), u, trace)
 		if sw.started {
-			g.metrics.FirstToken(id.Agent, alias, m.Model, res.ttft)
+			g.metrics.FirstToken(b.agent, alias, m.Model, res.ttft)
 		}
 		res.used, res.usage, res.started, res.err = used, u, sw.started, err
 
 		if err == nil {
 			if !sw.started {
-				// Provider terminou sem emitir nada (resposta vazia): ainda
-				// assim o agente precisa de um stream válido.
+				// The provider finished without emitting anything (empty
+				// answer): the agent still needs a valid stream.
 				sw.start()
 			}
 			if includeUsage && u != nil {
@@ -99,9 +100,9 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 	return res
 }
 
-// simulate serve providers sem streaming: espera a resposta inteira e
-// manda em chunks. Funciona com qualquer cliente; só o tempo até o 1º
-// token é que não melhora.
+// simulate serves providers without streaming: it waits for the whole
+// answer and sends it in chunks. It works with any client; only the time to
+// the first token does not improve.
 func simulate(ctx context.Context, p provider.Provider, c provider.Call, emit provider.Emit) (*openai.Usage, error) {
 	resp, err := p.Chat(ctx, c)
 	if err != nil {
@@ -132,9 +133,9 @@ func simulate(ctx context.Context, p provider.Provider, c provider.Call, emit pr
 	return resp.Usage, nil
 }
 
-// sseWriter escreve eventos SSE. Os headers (200 + X-Pedagio-*) só saem no
-// primeiro emit — até lá, o gateway ainda pode trocar de modelo ou devolver
-// um erro HTTP normal.
+// sseWriter writes SSE events. The headers (200 + X-Nautilm-*) only go out
+// on the first emit: until then the gateway can still switch models or
+// return a normal HTTP error.
 type sseWriter struct {
 	w       http.ResponseWriter
 	onStart func()
@@ -152,7 +153,7 @@ func (s *sseWriter) start() {
 	h := s.w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
-	h.Set("X-Accel-Buffering", "no") // nginx/ingress: não segurar o stream em buffer
+	h.Set("X-Accel-Buffering", "no") // nginx/ingress: do not buffer the stream
 	s.w.WriteHeader(http.StatusOK)
 }
 
@@ -163,7 +164,7 @@ func (s *sseWriter) emit(v any) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", b); err != nil {
-		return err // agente desconectou
+		return err // the agent disconnected
 	}
 	s.flush()
 	return nil

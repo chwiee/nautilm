@@ -22,16 +22,16 @@ func TestTokens(t *testing.T) {
 		t.Errorf("id=%+v err=%v", id, err)
 	}
 	if _, err := a.Authenticate(reqWith("")); !errors.Is(err, ErrNoCredentials) {
-		t.Errorf("token vazio no config não pode autenticar ninguém: %v", err)
+		t.Errorf("an empty token in the config must not authenticate anyone: %v", err)
 	}
 }
 
-// Simula o API server respondendo TokenReview.
+// Simulates the API server answering a TokenReview.
 func TestKubernetesTokenReview(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.Header.Get("Authorization") != "Bearer token-do-pedagio" {
+		if r.Header.Get("Authorization") != "Bearer nautilm-own-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -42,7 +42,7 @@ func TestKubernetesTokenReview(t *testing.T) {
 			} `json:"spec"`
 		}
 		json.NewDecoder(r.Body).Decode(&in)
-		ok := in.Spec.Token == "sa-kubets" && len(in.Spec.Audiences) == 1 && in.Spec.Audiences[0] == "pedagio"
+		ok := in.Spec.Token == "sa-kubets" && len(in.Spec.Audiences) == 1 && in.Spec.Audiences[0] == "nautilm"
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{
 			"authenticated": ok,
@@ -51,8 +51,8 @@ func TestKubernetesTokenReview(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	k := &Kubernetes{APIServer: srv.URL, Audience: "pedagio", http: srv.Client(),
-		readToken: func() (string, error) { return "token-do-pedagio", nil }}
+	k := &Kubernetes{APIServer: srv.URL, Audience: "nautilm", http: srv.Client(),
+		readToken: func() (string, error) { return "nautilm-own-token", nil }}
 
 	id, err := k.Authenticate(reqWith("sa-kubets"))
 	if err != nil || id.Agent != "observability/kubets" {

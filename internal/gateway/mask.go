@@ -7,20 +7,20 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chwiee/pedagio/internal/auth"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/auth"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// Campos de mensagem que são estrutura, não conteúdo: não mascarar.
+// Message fields that are structure, not content: never masked.
 var structural = map[string]bool{"role": true, "name": true, "tool_call_id": true, "id": true, "type": true}
 
-// maskChat mascara o texto de TODAS as mensagens (system, user, assistant,
-// resultado de tool e argumentos de tool_call) direto no JSON cru, e remonta
-// o pedido a partir dele. Por que no cru? O provider openaicompat repassa o
-// mapa cru; o Bedrock usa o struct. Mascarando a fonte e remontando, os dois
-// recebem exatamente o mesmo texto limpo.
+// maskChat masks the text of ALL messages (system, user, assistant, tool
+// results and tool_call arguments) directly in the raw JSON, and rebuilds
+// the request from it. Why the raw JSON? The openaicompat provider forwards
+// the raw map; Bedrock uses the struct. Masking the source and rebuilding
+// means both get exactly the same clean text.
 //
-// Só mexe em "messages": definição de tools, parâmetros etc. ficam intactos.
+// Only "messages" is touched: tool definitions, parameters etc. stay intact.
 func (g *Gateway) maskChat(rawMap map[string]any, req *openai.ChatRequest) (map[string]int, error) {
 	counts := map[string]int{}
 	if g.masker == nil || rawMap == nil {
@@ -32,7 +32,7 @@ func (g *Gateway) maskChat(rawMap map[string]any, req *openai.ChatRequest) (map[
 	}
 	rawMap["messages"] = g.maskValue(msgs, "", counts)
 	if len(counts) == 0 {
-		return counts, nil // nada mudou: evita remontar à toa
+		return counts, nil // nothing changed: no need to rebuild
 	}
 	b, err := json.Marshal(rawMap)
 	if err != nil {
@@ -40,13 +40,13 @@ func (g *Gateway) maskChat(rawMap map[string]any, req *openai.ChatRequest) (map[
 	}
 	var masked openai.ChatRequest
 	if err := json.Unmarshal(b, &masked); err != nil {
-		return counts, fmt.Errorf("remontando pedido mascarado: %w", err)
+		return counts, fmt.Errorf("rebuilding the masked request: %w", err)
 	}
 	*req = masked
 	return counts, nil
 }
 
-// maskValue anda no JSON e mascara cada string de conteúdo.
+// maskValue walks the JSON and masks every content string.
 func (g *Gateway) maskValue(v any, key string, counts map[string]int) any {
 	switch t := v.(type) {
 	case string:
@@ -68,8 +68,8 @@ func (g *Gateway) maskValue(v any, key string, counts map[string]int) any {
 	return v
 }
 
-// maskEmbed mascara os textos de um pedido de embeddings. O vetor de
-// "[CPF]" é o mesmo na indexação e na consulta: a busca continua coerente.
+// maskEmbed masks the texts of an embeddings request. The vector of
+// "[CPF]" is the same at indexing and at query time: search stays coherent.
 func (g *Gateway) maskEmbed(input []string) map[string]int {
 	counts := map[string]int{}
 	if g.masker == nil {
@@ -81,8 +81,8 @@ func (g *Gateway) maskEmbed(input []string) map[string]int {
 	return counts
 }
 
-// reportMasked conta na métrica, loga (só o NOME da regra, nunca o valor)
-// e avisa o agente pelo header X-Pedagio-Masked (ex: "cpf=2,email=1").
+// reportMasked counts in the metric, logs (the rule NAME only, never the
+// value) and tells the agent through X-Nautilm-Masked (e.g. "cpf=2,email=1").
 func (g *Gateway) reportMasked(w http.ResponseWriter, id auth.Identity, counts map[string]int) {
 	if len(counts) == 0 {
 		return
@@ -94,6 +94,6 @@ func (g *Gateway) reportMasked(w http.ResponseWriter, id auth.Identity, counts m
 	}
 	sort.Strings(parts)
 	summary := strings.Join(parts, ",")
-	w.Header().Set("X-Pedagio-Masked", summary)
-	g.log.Info("mascarado", "agent", id.Agent, "rules", summary)
+	w.Header().Set("X-Nautilm-Masked", summary)
+	g.log.Info("masked", "agent", id.Agent, "rules", summary)
 }

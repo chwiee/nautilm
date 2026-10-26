@@ -9,17 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// maxEmbedInputs limita o lote: protege o pedagio e a cota do Bedrock.
+// maxEmbedInputs caps the batch: protects nautilm and the Bedrock quota.
 const maxEmbedInputs = 256
 
-// embeddings atende POST /v1/embeddings. Mesmas regras do chat (auth,
-// apelido, permissão), com uma diferença de propósito: SEM fallback.
-// Vetores de modelos diferentes vivem em espaços diferentes; cair para
-// outro modelo produziria vetores que não se comparam com o índice.
+// embeddings serves POST /v1/embeddings. Same rules as chat (auth, alias,
+// permission, masking, quota, billing), with one difference on purpose: NO
+// fallback. Vectors from different models live in different spaces; falling
+// back to another model would build vectors that do not compare with the index.
 func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	id, ok := g.authenticate(w, r)
@@ -28,16 +28,16 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
-		g.reject(w, id, http.StatusRequestEntityTooLarge, "body", "corpo muito grande ou ilegível")
+		g.reject(w, id, http.StatusRequestEntityTooLarge, "body", "body too large or unreadable")
 		return
 	}
 	var req openai.EmbeddingRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		g.reject(w, id, http.StatusBadRequest, "json", "JSON inválido: "+err.Error())
+		g.reject(w, id, http.StatusBadRequest, "json", "invalid JSON: "+err.Error())
 		return
 	}
 	if len(req.Input) == 0 || len(req.Input) > maxEmbedInputs {
-		g.reject(w, id, http.StatusBadRequest, "input", fmt.Sprintf("input precisa ter de 1 a %d textos", maxEmbedInputs))
+		g.reject(w, id, http.StatusBadRequest, "input", fmt.Sprintf("input must have 1 to %d texts", maxEmbedInputs))
 		return
 	}
 	g.reportMasked(w, id, g.maskEmbed(req.Input))
@@ -46,14 +46,14 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	allowed := g.cfg.Allowed(id.Agent)
 	switch {
 	case !exists:
-		g.reject(w, id, http.StatusNotFound, "unknown_model", fmt.Sprintf("modelo %q não existe no pedagio; use um apelido", req.Model))
+		g.reject(w, id, http.StatusNotFound, "unknown_model", fmt.Sprintf("model %q does not exist in nautilm; use an alias", req.Model))
 		return
 	case m.Type != "embedding":
-		g.reject(w, id, http.StatusBadRequest, "wrong_model_type", fmt.Sprintf("%q é um modelo de chat, não de embedding", req.Model))
+		g.reject(w, id, http.StatusBadRequest, "wrong_model_type", fmt.Sprintf("%q is a chat model, not an embedding model", req.Model))
 		return
 	case !slices.Contains(allowed, req.Model):
 		g.reject(w, id, http.StatusForbidden, "forbidden_model",
-			fmt.Sprintf("agente %q não pode usar %q; permitidos: %s", id.Agent, req.Model, strings.Join(allowed, ", ")))
+			fmt.Sprintf("agent %q may not use %q; allowed: %s", id.Agent, req.Model, strings.Join(allowed, ", ")))
 		return
 	}
 	lim := g.limits(id)
@@ -62,26 +62,29 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	emb, ok := g.providers[m.Provider].(provider.Embedder)
 	if !ok {
-		writeError(w, http.StatusNotImplemented, "unsupported", fmt.Sprintf("provider %q não gera embeddings", m.Provider))
+		writeError(w, http.StatusNotImplemented, "unsupported", fmt.Sprintf("provider %q does not generate embeddings", m.Provider))
 		return
 	}
+	bill := g.billingFor(r, id)
+	w.Header().Set("X-Nautilm-Billed-To", bill.agent)
+	trace := traceID(r.Header.Get("traceparent"))
 
 	dims := m.Dimensions
 	if req.Dimensions != nil {
 		dims = *req.Dimensions
 	}
+	used := served{alias: req.Model, provider: m.Provider, model: m.Model}
 	vecs, u, err := emb.Embed(r.Context(), provider.EmbedCall{Model: m.Model, Input: req.Input, Dimensions: dims, Header: r.Header})
 	status := http.StatusOK
 	if err != nil {
 		status = asProviderError(err).Status
 	}
-	in, _, _ := usage(u)
+	cost := g.record(r.Context(), bill, "embedding", used, status, time.Since(start), u, trace)
+	in, _ := tokenCounts(u)
 	g.spendQuota(r.Context(), id, lim, in)
-	g.metrics.Call(id.Agent, req.Model, m.Model, status, time.Since(start), in, 0, 0)
-	g.metrics.Cost(id.Agent, req.Model, m.Model, m.Preco.Custo(in, 0))
 	if err != nil {
 		perr := asProviderError(err)
-		g.log.Warn("embeddings falhou", "agent", id.Agent, "alias", req.Model, "status", perr.Status, "error", perr.Message)
+		g.log.Warn("embeddings failed", "agent", id.Agent, "alias", req.Model, "status", perr.Status, "error", perr.Message)
 		writeError(w, perr.Status, perr.Code, perr.Message)
 		return
 	}
@@ -94,9 +97,10 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	if len(vecs) > 0 {
 		dim = len(vecs[0])
 	}
-	setServedHeaders(w, served{alias: req.Model, provider: m.Provider, model: m.Model})
-	g.log.Info("embeddings", "agent", id.Agent, "alias", req.Model, "provider", m.Provider, "model", m.Model,
-		"inputs", len(req.Input), "dims", dim, "tokens_in", in, "trace_id", traceID(r.Header.Get("traceparent")),
-		"duration_ms", time.Since(start).Milliseconds())
+	setServedHeaders(w, used)
+	setCostHeaders(w, cost)
+	g.log.Info("embeddings", "agent", id.Agent, "billed_to", bill.agent, "alias", req.Model, "provider", m.Provider,
+		"model", m.Model, "inputs", len(req.Input), "dims", dim, "tokens_in", in, "cost_usd", cost.CostUSD,
+		"price_source", cost.Source, "trace_id", trace, "duration_ms", time.Since(start).Milliseconds())
 	writeJSON(w, http.StatusOK, resp)
 }

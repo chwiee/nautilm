@@ -1,8 +1,10 @@
-// Package openaicompat fala com qualquer servidor compatível com a API da
-// OpenAI: Ollama (/v1), vLLM, LiteLLM, a própria OpenAI, DashScope (Qwen)...
+// Package openaicompat talks to any OpenAI-compatible server: Ollama (/v1),
+// vLLM, LiteLLM, OpenAI itself, OpenRouter, DashScope (Qwen)...
 //
-// É um repasse: troca o "model" pelo ID real, força stream=false (o gateway
-// faz o streaming para o cliente) e devolve a resposta.
+// It is a pass-through: it swaps "model" for the real ID, controls "stream"
+// (the gateway streams to the client) and returns the response. If the
+// upstream reports the cost in usage.cost (OpenRouter does), it is kept and
+// wins over the nautilm price table.
 package openaicompat
 
 import (
@@ -15,17 +17,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
 type Config struct {
-	// BaseURL até o /v1, ex: http://ollama:11434/v1
+	// BaseURL up to /v1, e.g. http://ollama:11434/v1
 	BaseURL string
-	// APIKey opcional (Authorization: Bearer). Vem de variável de ambiente,
-	// nunca do arquivo de config.
+	// APIKey is optional (Authorization: Bearer). It comes from an environment
+	// variable, never from the config file.
 	APIKey string
-	// Timeout por chamada. Padrão 120s (modelo local em CPU é lento).
+	// Timeout per call. Default 120s (a local model on CPU is slow).
 	Timeout time.Duration
 }
 
@@ -42,9 +44,9 @@ func New(cfg Config) *Provider {
 	return &Provider{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
 }
 
-// send monta o corpo (cópia do JSON do agente com model/stream trocados) e
-// faz o POST. Status >= 300 já vira *provider.Error aqui, ANTES de qualquer
-// byte ir para o cliente — é isso que permite fallback também no streaming.
+// send builds the body (a copy of the agent's JSON with model/stream swapped)
+// and POSTs it. Status >= 300 becomes a *provider.Error here, BEFORE any byte
+// reaches the client: that is what allows fallback in streaming too.
 func (p *Provider) send(ctx context.Context, c provider.Call, stream bool) (*http.Response, error) {
 	body := make(map[string]any, len(c.Raw)+1)
 	for k, v := range c.Raw {
@@ -54,8 +56,8 @@ func (p *Provider) send(ctx context.Context, c provider.Call, stream bool) (*htt
 	body["stream"] = stream
 	delete(body, "stream_options")
 	if stream {
-		// Sempre pedimos usage ao upstream (para as métricas). Se o agente
-		// também pediu, o gateway devolve; senão fica só com a gente.
+		// We always ask the upstream for usage (metrics and billing). If the
+		// agent asked too, the gateway returns it; otherwise it stays with us.
 		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if c.Request.EffectiveMaxTokens() == 0 && c.DefaultMaxTokens > 0 {
@@ -63,7 +65,7 @@ func (p *Provider) send(ctx context.Context, c provider.Call, stream bool) (*htt
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "serializando pedido: %v", err)
+		return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "serializing request: %v", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.BaseURL+"/chat/completions", bytes.NewReader(b))
@@ -105,10 +107,10 @@ func (p *Provider) Chat(ctx context.Context, c provider.Call) (*openai.ChatRespo
 	}
 	var out openai.ChatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "resposta não é JSON de chat: %v", err)
+		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "response is not chat JSON: %v", err)
 	}
 	if len(out.Choices) == 0 {
-		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "resposta sem choices")
+		return nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "response without choices")
 	}
 	return &out, nil
 }

@@ -9,31 +9,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// Invoker é a parte do SDK usada para embeddings (InvokeModel: a Converse
-// não gera embeddings). Mesma permissão IAM: bedrock:InvokeModel.
+// Invoker is the SDK part used for embeddings (InvokeModel: Converse does
+// not generate embeddings). Same IAM permission: bedrock:InvokeModel.
 type Invoker interface {
 	InvokeModel(ctx context.Context, in *bedrockruntime.InvokeModelInput, opts ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
 }
 
-// Embed gera embeddings com o Amazon Titan Text Embeddings (v2).
+// Embed generates embeddings with Amazon Titan Text Embeddings (v2).
 //
-// O Titan recebe UM texto por chamada, então fazemos uma chamada por item.
-// Para lotes grandes, vale paralelizar com limite (Bedrock tem cota de TPS).
+// Titan takes ONE text per call, so we make one call per item. For large
+// batches it is worth parallelizing with a limit (Bedrock has a TPS quota).
 //
-// Formato do Titan v2:
+// Titan v2 format:
 //
-//	pedido:   {"inputText": "...", "dimensions": 1024, "normalize": true}
-//	resposta: {"embedding": [...], "inputTextTokenCount": 7}
+//	request:  {"inputText": "...", "dimensions": 1024, "normalize": true}
+//	response: {"embedding": [...], "inputTextTokenCount": 7}
 func (p *Provider) Embed(ctx context.Context, c provider.EmbedCall) ([][]float32, *openai.Usage, error) {
 	if p.invoke == nil {
-		return nil, nil, provider.Errorf(http.StatusNotImplemented, "unsupported", "embeddings não configurados no provider bedrock")
+		return nil, nil, provider.Errorf(http.StatusNotImplemented, "unsupported", "embeddings not configured in the bedrock provider")
 	}
 	if !strings.Contains(c.Model, "titan-embed") {
-		return nil, nil, provider.Errorf(http.StatusBadRequest, "unsupported", "modelo %q: o pedagio só traduz embeddings do Titan (amazon.titan-embed-text-v2:0)", c.Model)
+		return nil, nil, provider.Errorf(http.StatusBadRequest, "unsupported", "model %q: nautilm only translates Titan embeddings (amazon.titan-embed-text-v2:0)", c.Model)
 	}
 	vecs := make([][]float32, len(c.Input))
 	usage := &openai.Usage{}
@@ -55,7 +55,7 @@ func (p *Provider) Embed(ctx context.Context, c provider.EmbedCall) ([][]float32
 			InputTextTokenCount int       `json:"inputTextTokenCount"`
 		}
 		if err := json.Unmarshal(out.Body, &res); err != nil || len(res.Embedding) == 0 {
-			return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "resposta do Titan sem embedding: %v", err)
+			return nil, nil, provider.Errorf(http.StatusBadGateway, "upstream_invalid", "Titan response without embedding: %v", err)
 		}
 		vecs[i] = res.Embedding
 		usage.PromptTokens += res.InputTextTokenCount

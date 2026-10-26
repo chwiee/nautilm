@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 
-	"github.com/chwiee/pedagio/internal/provider"
+	"github.com/chwiee/nautilm/internal/provider"
 )
 
 type fakeInvoker struct{ bodies []map[string]any }
@@ -34,13 +34,13 @@ func TestTitanEmbeddings(t *testing.T) {
 		t.Errorf("vecs=%v usage=%+v", vecs, u)
 	}
 	if inv.bodies[0]["inputText"] != "a" || inv.bodies[0]["dimensions"] != 256.0 || inv.bodies[0]["normalize"] != true {
-		t.Errorf("corpo enviado ao Titan: %v", inv.bodies[0])
+		t.Errorf("body sent to Titan: %v", inv.bodies[0])
 	}
 }
 
-func TestEmbeddingSoTitan(t *testing.T) {
+func TestEmbeddingOnlyTitan(t *testing.T) {
 	p := NewWithAPI(nil, nil).WithInvoker(&fakeInvoker{})
 	if _, _, err := p.Embed(context.Background(), provider.EmbedCall{Model: "cohere.embed-v4", Input: []string{"a"}}); err == nil {
-		t.Error("modelo não-Titan deveria dar erro claro")
+		t.Error("a non-Titan model must give a clear error")
 	}
 }

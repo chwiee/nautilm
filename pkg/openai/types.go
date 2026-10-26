@@ -1,12 +1,12 @@
-// Package openai tem os tipos do formato de chat da API OpenAI
-// (/v1/chat/completions), que é o "idioma" que o pedagio fala com os agentes.
+// Package openai holds the OpenAI chat API types (/v1/chat/completions):
+// the "language" nautilm speaks with agents.
 //
-// Por que OpenAI e não um formato nosso? Porque praticamente todo SDK,
-// framework e ferramenta já fala esse formato. Um agente novo só precisa
-// apontar a base URL para o pedagio — não precisa importar nada nosso.
+// Why OpenAI and not our own format? Practically every SDK, framework and
+// tool already speaks it. A new agent only needs to point its base URL to
+// nautilm; it does not need to import anything of ours.
 //
-// O pacote fica em pkg/ de propósito: agentes Go que quiserem tipos prontos
-// podem importar daqui.
+// The package lives in pkg/ on purpose: Go agents that want ready-made types
+// can import it.
 package openai
 
 import (
@@ -14,9 +14,9 @@ import (
 	"strings"
 )
 
-// ChatRequest é o corpo de POST /v1/chat/completions.
-// Só os campos que o pedagio entende estão aqui; o provider "openai"
-// repassa o JSON original, então campos extras não se perdem nele.
+// ChatRequest is the body of POST /v1/chat/completions.
+// Only the fields nautilm understands are here; the "openai" provider
+// forwards the original JSON, so extra fields are not lost there.
 type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
@@ -25,7 +25,7 @@ type ChatRequest struct {
 	Temperature *float64  `json:"temperature,omitempty"`
 	TopP        *float64  `json:"top_p,omitempty"`
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
-	// MaxCompletionTokens é o nome novo de max_tokens; vence se os dois vierem.
+	// MaxCompletionTokens is the new name of max_tokens; it wins if both are sent.
 	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
 	Stop                StringOrList    `json:"stop,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
@@ -34,7 +34,7 @@ type ChatRequest struct {
 	User                string          `json:"user,omitempty"`
 }
 
-// EffectiveMaxTokens devolve o limite pedido (0 = não informado).
+// EffectiveMaxTokens returns the requested limit (0 = not set).
 func (r *ChatRequest) EffectiveMaxTokens() int {
 	if r.MaxCompletionTokens != nil {
 		return *r.MaxCompletionTokens
@@ -53,7 +53,7 @@ type ResponseFormat struct {
 	Type string `json:"type"` // "text" | "json_object" | "json_schema"
 }
 
-// Message é uma mensagem da conversa.
+// Message is one conversation message.
 type Message struct {
 	Role       string     `json:"role"` // system | developer | user | assistant | tool
 	Content    Content    `json:"content"`
@@ -62,12 +62,12 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// Content aceita os dois formatos da OpenAI: string simples ou lista de
-// partes [{"type":"text","text":"..."}]. Guardamos só o texto (imagens
-// ainda não são suportadas pelo pedagio).
+// Content accepts both OpenAI shapes: a plain string or a list of parts
+// [{"type":"text","text":"..."}]. Only text is kept (images are not
+// supported by nautilm yet).
 type Content struct {
 	Text string
-	// HasNonText indica que vieram partes que não são texto (ex: image_url).
+	// HasNonText tells that non-text parts were sent (e.g. image_url).
 	HasNonText bool
 }
 
@@ -99,24 +99,24 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 
 func (c Content) MarshalJSON() ([]byte, error) { return json.Marshal(c.Text) }
 
-// Text cria um Content com texto.
+// Text builds a text Content.
 func Text(s string) Content { return Content{Text: s} }
 
-// ToolCall é o pedido do modelo para executar uma função.
+// ToolCall is the model asking to run a function.
 type ToolCall struct {
-	Index    *int         `json:"index,omitempty"` // só em streaming
+	Index    *int         `json:"index,omitempty"` // streaming only
 	ID       string       `json:"id,omitempty"`
-	Type     string       `json:"type,omitempty"` // sempre "function"
+	Type     string       `json:"type,omitempty"` // always "function"
 	Function FunctionCall `json:"function"`
 }
 
 type FunctionCall struct {
 	Name string `json:"name,omitempty"`
-	// Arguments é JSON DENTRO de uma string — é assim que a OpenAI define.
+	// Arguments is JSON INSIDE a string: that is how OpenAI defines it.
 	Arguments string `json:"arguments"`
 }
 
-// Tool descreve uma função que o modelo pode pedir.
+// Tool describes a function the model may call.
 type Tool struct {
 	Type     string      `json:"type"` // "function"
 	Function FunctionDef `json:"function"`
@@ -128,7 +128,7 @@ type FunctionDef struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema
 }
 
-// ChatResponse é a resposta sem streaming.
+// ChatResponse is the non-streaming response.
 type ChatResponse struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"` // "chat.completion"
@@ -144,27 +144,54 @@ type Choice struct {
 	FinishReason string          `json:"finish_reason"` // stop | length | tool_calls | content_filter
 }
 
-// ResponseMessage usa *string em Content porque a OpenAI manda null quando
-// o modelo só pediu tools.
+// ResponseMessage uses *string for Content because OpenAI sends null when
+// the model only asked for tools.
 type ResponseMessage struct {
 	Role      string     `json:"role"`
 	Content   *string    `json:"content"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// Usage conta tokens — é o que vira custo na fatura.
+// Usage counts tokens: this is what becomes the bill.
+//
+// Normalized meaning inside nautilm (every provider maps to it):
+//   - PromptTokens: ALL input tokens, including cache reads and cache writes
+//     (OpenAI semantics);
+//   - PromptTokensDetails.CachedTokens: input tokens read from the cache;
+//   - PromptTokensDetails.CacheWriteTokens: input tokens written to the cache
+//     (nautilm extension; Bedrock/Anthropic charge them differently);
+//   - Cost: cost in USD reported BY THE PROVIDER, when it reports one
+//     (e.g. OpenRouter). When present, it wins over the price table.
 type Usage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`
 	TotalTokens         int                  `json:"total_tokens"`
 	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	Cost                *float64             `json:"cost,omitempty"`
 }
 
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
-// ChatChunk é um evento de streaming (SSE "data: {...}").
+// CacheRead returns the tokens read from the cache (0 when unknown).
+func (u *Usage) CacheRead() int {
+	if u == nil || u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CachedTokens
+}
+
+// CacheWrite returns the tokens written to the cache (0 when unknown).
+func (u *Usage) CacheWrite() int {
+	if u == nil || u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CacheWriteTokens
+}
+
+// ChatChunk is a streaming event (SSE "data: {...}").
 type ChatChunk struct {
 	ID      string        `json:"id"`
 	Object  string        `json:"object"` // "chat.completion.chunk"
@@ -186,7 +213,7 @@ type Delta struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// ErrorResponse é o formato de erro da OpenAI — clientes sabem exibir.
+// ErrorResponse is the OpenAI error format: clients know how to show it.
 type ErrorResponse struct {
 	Error ErrorBody `json:"error"`
 }
@@ -197,7 +224,7 @@ type ErrorBody struct {
 	Code    string `json:"code,omitempty"`
 }
 
-// ModelList é a resposta de GET /v1/models.
+// ModelList is the response of GET /v1/models.
 type ModelList struct {
 	Object string  `json:"object"` // "list"
 	Data   []Model `json:"data"`
@@ -209,7 +236,7 @@ type Model struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-// StringOrList aceita "stop": "x" ou "stop": ["x","y"].
+// StringOrList accepts "stop": "x" or "stop": ["x","y"].
 type StringOrList []string
 
 func (s *StringOrList) UnmarshalJSON(b []byte) error {
@@ -232,16 +259,16 @@ func (s *StringOrList) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// EmbeddingRequest é o corpo de POST /v1/embeddings.
+// EmbeddingRequest is the body of POST /v1/embeddings.
 type EmbeddingRequest struct {
 	Model string       `json:"model"`
-	Input StringOrList `json:"input"` // um texto ou uma lista
-	// Dimensions pede vetores menores (Titan v2: 256, 512 ou 1024).
+	Input StringOrList `json:"input"` // one text or a list
+	// Dimensions asks for smaller vectors (Titan v2: 256, 512 or 1024).
 	Dimensions *int   `json:"dimensions,omitempty"`
 	User       string `json:"user,omitempty"`
 }
 
-// EmbeddingResponse é a resposta de POST /v1/embeddings.
+// EmbeddingResponse is the response of POST /v1/embeddings.
 type EmbeddingResponse struct {
 	Object string          `json:"object"` // "list"
 	Data   []EmbeddingData `json:"data"`

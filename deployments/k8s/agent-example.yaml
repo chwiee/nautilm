@@ -1,0 +1,41 @@
+# How an agent uses nautilm: the projected ServiceAccount token with audience
+# "nautilm". The kubelet renews the file; the agent only reads it and sends
+# Authorization: Bearer <file content>, rereading it on every call.
+# Its identity in nautilm (and in the usage ledger) is "observability/kubets".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubets
+  namespace: observability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubets
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kubets}
+  template:
+    metadata:
+      labels: {app: kubets}
+    spec:
+      serviceAccountName: kubets       # identity in nautilm: observability/kubets
+      containers:
+        - name: kubets
+          image: ghcr.io/chwiee/kubets:latest
+          env:
+            - {name: LLM_BASE_URL, value: "http://nautilm.llm-gateway/v1"}
+            - {name: LLM_MODEL, value: "smart"}            # an alias, never the model ID
+            - {name: LLM_TOKEN_FILE, value: "/var/run/secrets/nautilm/token"}
+          volumeMounts:
+            - {name: nautilm-token, mountPath: /var/run/secrets/nautilm, readOnly: true}
+      volumes:
+        - name: nautilm-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: nautilm
+                  expirationSeconds: 3600

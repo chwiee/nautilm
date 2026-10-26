@@ -1,6 +1,6 @@
-BINARY := pedagio
+BINARY := nautilm
 
-.PHONY: build run test lint clean docker
+.PHONY: build run test test-valkey lint clean docker
 
 build:
 	go build -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -19,3 +19,7 @@ docker:
 
 clean:
 	rm -rf bin
+
+# Integration tests against a real Valkey (quotas and usage ledger).
+test-valkey:
+	VALKEY_URL=$${VALKEY_URL:-redis://localhost:6379} go test -count=1 -run Valkey ./internal/quota ./internal/usage

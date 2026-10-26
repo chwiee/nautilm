@@ -5,26 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/chwiee/pedagio/internal/auth"
-	"github.com/chwiee/pedagio/internal/config"
-	"github.com/chwiee/pedagio/internal/metrics"
-	"github.com/chwiee/pedagio/internal/provider"
-	"github.com/chwiee/pedagio/pkg/openai"
+	"github.com/chwiee/nautilm/internal/provider"
+	"github.com/chwiee/nautilm/pkg/openai"
 )
 
-// fakeStreamer emite os textos em ordem. Se gate != nil, espera nele antes
-// de cada chunk depois do primeiro (para provar que o 1º chega antes do fim).
+// fakeStreamer emits the texts in order. If gate != nil, it waits on it
+// before every chunk after the first (to prove the 1st arrives before the end).
 type fakeStreamer struct {
 	fake
 	texts    []string
-	openErr  error // falha antes de emitir
-	midErr   error // falha depois do 1º chunk
+	openErr  error // fails before emitting
+	midErr   error // fails after the 1st chunk
 	gate     chan struct{}
 	streamed int
 }
@@ -47,7 +42,8 @@ func (f *fakeStreamer) ChatStream(ctx context.Context, c provider.Call, emit pro
 			return nil, err
 		}
 		if f.midErr != nil {
-			return nil, f.midErr
+			// tokens were spent before it broke: they must still be billed
+			return &openai.Usage{PromptTokens: 4, CompletionTokens: 1, TotalTokens: 5}, f.midErr
 		}
 	}
 	stop := "stop"
@@ -55,44 +51,18 @@ func (f *fakeStreamer) ChatStream(ctx context.Context, c provider.Call, emit pro
 	return &openai.Usage{PromptTokens: 4, CompletionTokens: 2, TotalTokens: 6}, nil
 }
 
-func setupP(t *testing.T, a, b provider.Provider) (*httptest.Server, *metrics.Registry) {
-	t.Helper()
-	cfg, err := config.Parse([]byte(testConfig))
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := metrics.New()
-	gw := New(cfg, map[string]provider.Provider{"a": a, "b": b}, auth.Chain{auth.NewTokens(cfg.Auth.Tokens)}, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv := httptest.NewServer(gw.Handler())
-	t.Cleanup(srv.Close)
-	return srv, m
-}
+const streamBody = `{"model":"smart","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`
 
-const streamBody = `{"model":"smart","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"oi"}]}`
-
-// readSSE devolve os payloads "data:" em ordem.
-func readSSE(t *testing.T, r io.Reader) []string {
-	t.Helper()
-	var out []string
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		if d, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
-func TestStreamReal(t *testing.T) {
-	a := &fakeStreamer{texts: []string{"o", "i"}}
-	srv, m := setupP(t, a, &fake{})
-	resp := post(t, srv, "tok-kubets", streamBody)
-	if resp.Header.Get("X-Pedagio-Model") != "modelo-grande" || resp.Header.Get("Content-Type") != "text/event-stream" {
+func TestRealStream(t *testing.T) {
+	a := &fakeStreamer{texts: []string{"h", "i"}}
+	env := setup(t, a, &fake{})
+	resp := post(t, env.srv, "tok-k8s", streamBody)
+	if resp.Header.Get("X-Nautilm-Model") != "big-model" || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("headers: %v", resp.Header)
 	}
 	events := readSSE(t, resp.Body)
 	if events[len(events)-1] != "[DONE]" {
-		t.Errorf("último evento deveria ser [DONE]: %v", events)
+		t.Errorf("the last event must be [DONE]: %v", events)
 	}
 	var text string
 	var usage *openai.Usage
@@ -109,26 +79,24 @@ func TestStreamReal(t *testing.T) {
 			usage = c.Usage
 		}
 	}
-	if text != "oi" || usage == nil || usage.TotalTokens != 6 {
+	if text != "hi" || usage == nil || usage.TotalTokens != 6 {
 		t.Errorf("text=%q usage=%+v", text, usage)
 	}
 	if a.streamed != 1 || len(a.calls) != 0 {
-		t.Errorf("deveria usar ChatStream, não Chat")
+		t.Errorf("must use ChatStream, not Chat")
 	}
-	var sb strings.Builder
-	m.Write(&sb)
-	if !strings.Contains(sb.String(), "pedagio_time_to_first_token_seconds_count") {
-		t.Errorf("métrica de TTFT ausente")
+	if !strings.Contains(metricsText(env.metrics), "nautilm_time_to_first_token_seconds_count") {
+		t.Errorf("TTFT metric missing")
 	}
 }
 
-// O 1º chunk precisa chegar ao agente ENQUANTO o provider ainda gera o resto.
-// É a diferença entre stream de verdade e simulado.
-func TestPrimeiroChunkChegaAntesDoFim(t *testing.T) {
+// The 1st chunk must reach the agent WHILE the provider is still generating.
+// That is the difference between real and simulated streaming.
+func TestFirstChunkArrivesBeforeTheEnd(t *testing.T) {
 	gate := make(chan struct{})
-	a := &fakeStreamer{texts: []string{"primeiro", "segundo"}, gate: gate}
-	srv, _ := setupP(t, a, &fake{})
-	resp := post(t, srv, "tok-kubets", streamBody)
+	a := &fakeStreamer{texts: []string{"first", "second"}, gate: gate}
+	env := setup(t, a, &fake{})
+	resp := post(t, env.srv, "tok-k8s", streamBody)
 
 	first := make(chan string, 1)
 	go func() {
@@ -147,51 +115,55 @@ func TestPrimeiroChunkChegaAntesDoFim(t *testing.T) {
 	}()
 	select {
 	case line := <-first:
-		if !strings.Contains(line, "primeiro") {
-			t.Errorf("1º evento: %s", line)
+		if !strings.Contains(line, "first") {
+			t.Errorf("1st event: %s", line)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("1º chunk não chegou enquanto o provider estava parado: o gateway está segurando em buffer")
+		t.Fatal("the 1st chunk did not arrive while the provider was paused: the gateway is buffering")
 	}
 	close(gate)
 }
 
-func TestStreamFallbackAntesDoPrimeiroByte(t *testing.T) {
-	a := &fakeStreamer{openErr: provider.Errorf(429, "ThrottlingException", "devagar")}
-	b := &fakeStreamer{texts: []string{"do fast"}}
-	srv, _ := setupP(t, a, b)
-	resp := post(t, srv, "tok-kubets", streamBody)
-	if resp.StatusCode != 200 || resp.Header.Get("X-Pedagio-Alias") != "fast" {
-		t.Fatalf("status %d alias %q", resp.StatusCode, resp.Header.Get("X-Pedagio-Alias"))
+func TestStreamFallbackBeforeTheFirstByte(t *testing.T) {
+	a := &fakeStreamer{openErr: provider.Errorf(429, "ThrottlingException", "slow down")}
+	b := &fakeStreamer{texts: []string{"from fast"}}
+	env := setup(t, a, b)
+	resp := post(t, env.srv, "tok-k8s", streamBody)
+	if resp.StatusCode != 200 || resp.Header.Get("X-Nautilm-Alias") != "fast" {
+		t.Fatalf("status %d alias %q", resp.StatusCode, resp.Header.Get("X-Nautilm-Alias"))
 	}
-	if events := readSSE(t, resp.Body); !strings.Contains(strings.Join(events, ""), "do fast") {
-		t.Errorf("eventos: %v", events)
+	if events := readSSE(t, resp.Body); !strings.Contains(strings.Join(events, ""), "from fast") {
+		t.Errorf("events: %v", events)
 	}
 }
 
-func TestStreamErroNoMeioNaoFazFallback(t *testing.T) {
-	a := &fakeStreamer{texts: []string{"come", "ço"}, midErr: provider.Errorf(503, "ModelStreamErrorException", "caiu")}
-	b := &fakeStreamer{texts: []string{"nunca"}}
-	srv, _ := setupP(t, a, b)
-	resp := post(t, srv, "tok-kubets", streamBody)
+func TestStreamErrorMidwayDoesNotFallBack(t *testing.T) {
+	a := &fakeStreamer{texts: []string{"sta", "rt"}, midErr: provider.Errorf(503, "ModelStreamErrorException", "broke")}
+	b := &fakeStreamer{texts: []string{"never"}}
+	env := setup(t, a, b)
+	resp := post(t, env.srv, "tok-k8s", streamBody)
 	if resp.StatusCode != 200 {
-		t.Fatalf("o 200 já tinha saído: status %d", resp.StatusCode)
+		t.Fatalf("the 200 was already sent: status %d", resp.StatusCode)
 	}
 	events := readSSE(t, resp.Body)
 	last := events[len(events)-1]
-	if !strings.Contains(last, `"error"`) || !strings.Contains(last, "caiu") {
-		t.Errorf("último evento deveria ser o erro: %v", events)
+	if !strings.Contains(last, `"error"`) || !strings.Contains(last, "broke") {
+		t.Errorf("the last event must be the error: %v", events)
 	}
 	if b.streamed != 0 {
-		t.Errorf("não pode trocar de modelo no meio do stream")
+		t.Errorf("must not switch models in the middle of a stream")
+	}
+	// The tokens spent before the break are billed.
+	if !strings.Contains(metricsText(env.metrics), `nautilm_tokens_total{agent="k8s",alias="smart",provider="a",model="big-model",kind="input"} 4`) {
+		t.Errorf("tokens of a broken stream must be accounted:\n%s", metricsText(env.metrics))
 	}
 }
 
-func TestStreamErroSemFallbackViraHTTP(t *testing.T) {
-	a := &fakeStreamer{openErr: provider.Errorf(400, "ValidationException", "pedido ruim")}
-	srv, _ := setupP(t, a, &fakeStreamer{})
-	resp := post(t, srv, "tok-kubets", streamBody)
+func TestStreamErrorWithoutFallbackIsHTTP(t *testing.T) {
+	a := &fakeStreamer{openErr: provider.Errorf(400, "ValidationException", "bad request")}
+	env := setup(t, a, &fakeStreamer{})
+	resp := post(t, env.srv, "tok-k8s", streamBody)
 	if resp.StatusCode != 400 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
-		t.Errorf("antes do 1º byte o erro deve ser HTTP normal: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		t.Errorf("before the 1st byte the error must be a normal HTTP error: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }

@@ -67,10 +67,10 @@ providers:
 pricing:
   - provider: bedrock-us-east-2
     model: anthropic.claude-sonnet-5-5
-    input: 3.00          # USD por 1M tokens
-    output: 15.00
-    cache_read: 0.30     # sem preço de cache = cobra como input (conservador)
-    cache_write: 3.75
+    input: 2.20          # USD por 1M tokens (preço regional us-east-2, tabela AWS de 23/10/2026)
+    output: 11.00
+    cache_read: 0.11     # sem preço de cache = cobra como input (conservador)
+    cache_write: 2.75
     effective_from: 2026-10-01
   - provider: ollama-local
     model: "*"           # todos os modelos do provider

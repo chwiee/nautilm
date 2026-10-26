@@ -52,7 +52,7 @@ data:
       embed: {type: embedding, provider: bedrock-us-east-2, model: amazon.titan-embed-text-v2:0, dimensions: 1024}
     # EXAMPLE prices (USD per 1M tokens): check the Bedrock price list for your Region.
     pricing:
-      - {provider: bedrock-us-east-2, model: anthropic.claude-sonnet-5-5, input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75, effective_from: 2026-10-01}
+      - {provider: bedrock-us-east-2, model: anthropic.claude-sonnet-5-5, input: 2.20, output: 11.00, cache_read: 0.11, cache_write: 2.75, effective_from: 2026-10-01}
       - {provider: bedrock-us-east-2, model: amazon.nova-lite-v1:0, input: 0.06, output: 0.24, effective_from: 2026-10-01}
       - {provider: bedrock-us-east-2, model: amazon.titan-embed-text-v2:0, input: 0.02, effective_from: 2026-10-01}
     strict_pricing: true

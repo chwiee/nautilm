@@ -49,17 +49,18 @@ models:
     model: nomic-embed-text
 
 # Price catalog: per PROVIDER + MODEL (not per alias), USD per 1M tokens.
-# EXAMPLE VALUES: check the current price list of each provider
+# Bedrock values from the AWS price list for us-east-2 (2026-10-23), regional
+# on-demand. Check the current price list before relying on them.
 # (https://aws.amazon.com/bedrock/pricing/ for Bedrock in your Region).
 # When a price changes, ADD a line with a new effective_from: history keeps
 # the old price.
 pricing:
   - provider: bedrock-us-east-2
     model: anthropic.claude-sonnet-5-5
-    input: 3.00
-    output: 15.00
-    cache_read: 0.30
-    cache_write: 3.75
+    input: 2.20          # regional (in-Region) price; "Global" CRIS is cheaper but not allowed in a single-Region account
+    output: 11.00
+    cache_read: 0.11
+    cache_write: 2.75
     effective_from: 2026-10-01
   - provider: bedrock-us-east-2
     model: amazon.nova-lite-v1:0

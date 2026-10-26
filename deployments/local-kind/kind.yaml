@@ -1,0 +1,12 @@
+# kind cluster for the local test of nautilm (Postgres + PVC, Entra mock).
+# Fixed host ports, so the browser and the Entra redirect URI never change:
+#   http://localhost:18095  nautilm (dashboard, API)
+#   http://localhost:18096  mock Entra ID (sign-in page)
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nautilm-lab
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30095, hostPort: 18095, protocol: TCP}
+      - {containerPort: 30096, hostPort: 18096, protocol: TCP}

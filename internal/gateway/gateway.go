@@ -32,7 +32,9 @@ import (
 	"github.com/chwiee/nautilm/internal/pricing"
 	"github.com/chwiee/nautilm/internal/provider"
 	"github.com/chwiee/nautilm/internal/quota"
+	"github.com/chwiee/nautilm/internal/store"
 	"github.com/chwiee/nautilm/internal/usage"
+	"github.com/chwiee/nautilm/internal/webauth"
 	"github.com/chwiee/nautilm/pkg/openai"
 )
 
@@ -52,6 +54,10 @@ type Gateway struct {
 	quota     *quota.Quota
 	usage     usage.Store
 	now       func() time.Time
+
+	store        store.Store
+	storedTokens *auth.StoredTokens
+	entra        *webauth.Entra
 }
 
 func New(cfg *config.Config, providers map[string]provider.Provider, a auth.Authenticator, m *metrics.Registry, log *slog.Logger) *Gateway {
@@ -91,6 +97,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/usage", g.usageJSON)
 	mux.HandleFunc("GET /v1/usage.csv", g.usageCSV)
 	mux.HandleFunc("GET /dashboard", g.dashboard)
+	g.authRoutes(mux)
 	mux.Handle("GET /metrics", g.metrics)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 	return mux
@@ -102,7 +109,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := openai.ModelList{Object: "list", Data: []openai.Model{}}
-	for _, alias := range g.cfg.Allowed(id.Agent) {
+	for _, alias := range g.allowed(id) {
 		list.Data = append(list.Data, openai.Model{ID: alias, Object: "model", OwnedBy: "nautilm"})
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -126,7 +133,7 @@ func (g *Gateway) billingFor(r *http.Request, id auth.Identity) billing {
 	b := billing{agent: id.Agent, caller: id.Agent}
 	if obo := strings.TrimSpace(r.Header.Get(HeaderOnBehalfOf)); obo != "" && obo != id.Agent {
 		switch {
-		case !g.cfg.CanActOnBehalf(id.Agent):
+		case !g.canActOnBehalf(id):
 			g.metrics.Rejected(id.Agent, "on_behalf_of_not_allowed")
 			g.log.Warn("on-behalf-of ignored: caller is not allowed", "caller", id.Agent, "on_behalf_of", obo)
 		case !agentName.MatchString(obo):
@@ -135,7 +142,7 @@ func (g *Gateway) billingFor(r *http.Request, id auth.Identity) billing {
 			b.agent = obo
 		}
 	}
-	b.team, b.costCenter = g.cfg.Billing(b.agent)
+	b.team, b.costCenter = g.billingOf(id, b.agent)
 	return b
 }
 
@@ -173,7 +180,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 
 	// Agents ask for an ALIAS. A raw model ID is refused on purpose: that is
 	// what makes switching models possible without touching any agent.
-	allowed := g.cfg.Allowed(id.Agent)
+	allowed := g.allowed(id)
 	m, exists := g.cfg.Models[req.Model]
 	if !exists {
 		g.reject(w, id, http.StatusNotFound, "unknown_model",

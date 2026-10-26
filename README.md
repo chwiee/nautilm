@@ -139,13 +139,118 @@ centro de custo × provedor × modelo.
 - custo por grupo, custo por dia, tabela com % do total e **Export CSV**.
 
 Os dados vêm de `GET /v1/usage?from=2026-10-19&to=2026-10-25&group_by=agent,provider`
-(JSON) e `GET /v1/usage.csv` (mesmos parâmetros), protegidos por
-`dashboard.token`. **Sem token configurado, a API fica desligada** (404): custo
-é dado interno. O token do painel não é o de nenhum agente.
+(JSON) e `GET /v1/usage.csv` (mesmos parâmetros). Quem lê: pessoa logada pelo
+**Entra ID** (grupo viewer ou admin, ver abaixo) ou automação com
+`dashboard.token` (Grafana, scripts; só leitura). **Sem Entra e sem token, a
+API fica desligada** (404): custo é dado interno. O token do painel não é o de
+nenhum agente.
 
 > É **estimativa** (tokens informados pelo provedor × tabela). Concilie uma vez
 > por mês com a fatura de cada provedor (Cost Explorer no Bedrock, console de
 > uso da Anthropic). Diferença grande = tabela desatualizada.
+
+## Login com Entra ID e tokens de aplicação
+
+O painel tem login **Microsoft Entra ID** e dois papéis, pelos **grupos** do usuário:
+
+| Papel | Grupo (`dashboard.entra.*`) | Pode |
+|---|---|---|
+| **viewer** | `viewer_groups` | ver uso e custo (aba Usage) |
+| **admin** | `admin_groups` (time de gestão do nautilm) | tudo do viewer + **criar, rotacionar e revogar tokens** de aplicação + ver a auditoria |
+
+Fora dos dois grupos = "Access denied" (e a tentativa fica na auditoria).
+
+### Tokens criados no painel
+
+Aba **Tokens** (só admin) → *New application token*: nome do agente, time,
+centro de custo, validade (padrão 90 dias), cotas próprias e **quais apelidos**
+ele pode usar. O token (`naut_...`) aparece **uma única vez**; no banco fica só
+o hash SHA-256.
+
+- **Rotacionar** cria um token novo com o mesmo perfil e **não derruba o
+  antigo**: troque no agente e depois revogue o antigo (sem downtime).
+- **Revogar** vale na hora na réplica que recebeu e em até **15 s** nas outras (cache).
+- Token do painel **nunca** pode agir em nome de outro (`on_behalf_of`), e não
+  pode ter o nome de um agente do config (409): quem é orquestrador fica no config.
+- Agentes **dentro do EKS** continuam usando o token da ServiceAccount; o
+  token do painel é para apps fora do cluster.
+- Banco fora do ar: chamadas com `naut_...` recebem **503** (não 401), para o
+  agente não achar que o token morreu.
+- Toda ação (login, login negado, criar, rotacionar, revogar, logout) vai para
+  a tabela `audit_log` com quem fez e quando: aba **Audit**.
+
+### Como funciona (segurança)
+
+- Authorization Code + **PKCE** no servidor; `state` e `nonce` em cookie
+  temporário. O ID token é validado (assinatura, emissor, audiência, nonce).
+- Sessão: cookie `nautilm_session` **HttpOnly**, `SameSite=Lax`, `Secure`
+  quando `public_url` é https; no banco só o hash. Duração em `session_ttl` (8h).
+- POST de admin exige `Origin` igual ao `public_url` (proteção CSRF).
+- Os grupos vêm do claim `groups` do token. Usuário com **mais de 200 grupos**
+  recebe "overage" no lugar da lista e é negado com a dica: configure a App
+  Registration para mandar **só os grupos atribuídos à aplicação**.
+
+### App Registration no Entra (uma vez, por um admin do tenant)
+
+1. **Entra ID → App registrations → New registration**: nome `nautilm`,
+   *Single tenant*, Redirect URI tipo **Web**: `https://<public_url>/auth/callback`.
+2. **Certificates & secrets → New client secret**: vai para
+   `NAUTILM_ENTRA_CLIENT_SECRET` (anote a validade: expirou = ninguém loga).
+3. **Token configuration → Add groups claim → Groups assigned to the
+   application**, emitido como *Group ID* no ID token.
+4. **Enterprise applications → nautilm → Users and groups**: adicione o grupo
+   admin e o grupo viewer. Com *Assignment required = Yes*, quem não está em
+   nenhum dos dois nem chega ao nautilm.
+5. No config: `tenant_id`, `client_id` (Application ID) e os **Object IDs** dos grupos.
+
+```yaml
+dashboard:
+  public_url: https://nautilm.example.com
+  session_ttl: 8h
+  entra:
+    tenant_id: <tenant-id>
+    client_id: <application-client-id>
+    client_secret: ${NAUTILM_ENTRA_CLIENT_SECRET}
+    admin_groups: [<object-id>]
+    viewer_groups: [<object-id>]
+database:
+  aws_secret_arn: arn:aws:secretsmanager:us-east-2:<ACCOUNT_ID>:secret:nautilm/database-XXXXXX
+```
+
+### Banco: PostgreSQL num pod com PVC
+
+Tokens, sessões e auditoria ficam no **PostgreSQL** (o livro-caixa continua no
+Valkey). As tabelas são criadas sozinhas na subida (migrações com *advisory
+lock*: várias réplicas sobem juntas sem conflito). Se o banco ainda não
+respondeu, o nautilm tenta de novo (2s → 30s, até 5 min).
+
+- **EKS**: [deployments/k8s/postgres.yaml](deployments/k8s/postgres.yaml):
+  StatefulSet + volume EBS gp3, `pg_dump` diário (7 cópias) e NetworkPolicy
+  liberando só o nautilm.
+- **URL de conexão**: na AWS, num segredo do **Secrets Manager**
+  (`database.aws_secret_arn`; texto `postgres://...` ou JSON com a chave `url`,
+  outra chave via `aws_secret_key`). Local, numa **Secret do Kubernetes**
+  (`database.url: ${NAUTILM_DATABASE_URL}`). Um ou outro, nunca os dois.
+- **Trade-off** do banco em pod: barato e simples, mas **o backup é seu**. O
+  `pg_dump` fica num PVC da mesma zona; para desastre, tire também snapshot do
+  EBS (AWS Backup). Se o nautilm virar peça crítica de muitos times, migrar
+  para **RDS/Aurora PostgreSQL** é só trocar a URL no segredo.
+
+### Testar tudo local (kind + Postgres + Entra simulado)
+
+```bash
+bash deployments/local-kind/up.sh
+```
+
+Sobe um cluster kind `nautilm-lab` com Postgres (PVC), Valkey, um **Entra
+simulado** e 2 réplicas do nautilm usando o Ollama da máquina. As senhas são
+geradas na hora e ficam só em Secrets do cluster. Abra
+`http://localhost:18095/dashboard` → *Sign in with Microsoft* e escolha:
+**ana** (admin), **bruno** (viewer), **carla** (sem grupo, negada) ou
+**dani** (overage, negada). Apagar: `kind delete cluster --name nautilm-lab`.
+
+> O Entra simulado ([examples/mock-entra](examples/mock-entra)) deixa qualquer
+> um entrar como qualquer usuário: **só laboratório**, nunca em cluster real.
 
 ## Proteções (ligadas por padrão)
 
@@ -182,8 +287,11 @@ Tokens de entrada + saída por agente, em janelas fixas: **200 mil por minuto** 
 | `POST /v1/chat/completions` | chat (com ou sem `stream`; tool calling) |
 | `POST /v1/embeddings` | embeddings (Titan v2 no Bedrock, `/embeddings` nos compatíveis); **sem fallback** |
 | `GET /v1/models` | apelidos que **este** agente pode usar |
-| `GET /v1/usage`, `/v1/usage.csv` | livro-caixa (token do painel) |
-| `GET /dashboard` | painel de uso e custo |
+| `GET /v1/usage`, `/v1/usage.csv` | livro-caixa (sessão viewer/admin ou token do painel) |
+| `GET /dashboard` | painel de uso, custo, tokens e auditoria |
+| `GET /auth/login`, `/auth/callback`, `POST /auth/logout`, `GET /auth/me` | login Entra ID e sessão |
+| `GET/POST /v1/admin/tokens`, `POST /v1/admin/tokens/{id}/rotate`, `/{id}/revoke` | tokens de aplicação (**admin**) |
+| `GET /v1/admin/audit`, `/v1/admin/aliases` | auditoria e apelidos (**admin**) |
 | `GET /metrics` | Prometheus (operação): requests, tokens, custo, duração, TTFT, fallbacks, bloqueios, mascaramentos, registros perdidos |
 | `GET /healthz` | health |
 
@@ -237,7 +345,7 @@ serve. Os agentes não têm role IAM nenhuma; eles só precisam de um token
 Arquivos prontos, validados no **IAM Access Analyzer** sem nenhum achado
 (erro, aviso de segurança ou sugestão):
 
-- [deployments/aws/nautilm-bedrock-policy.json](deployments/aws/nautilm-bedrock-policy.json): permissões
+- [deployments/aws/nautilm-policy.json](deployments/aws/nautilm-policy.json): permissões
 - [deployments/aws/nautilm-pod-identity-trust.json](deployments/aws/nautilm-pod-identity-trust.json): confiança
 
 Troque `<ACCOUNT_ID>` e `<CLUSTER_NAME>` antes de usar.
@@ -251,6 +359,7 @@ AWS para as chamadas que o código faz: `Converse`, `ConverseStream` e `InvokeMo
 | `InvokeClaudeThroughTheUsInferenceProfile` | as mesmas | ARN do **perfil** `us.anthropic.claude-sonnet-5-5` | o Claude 5.5 só existe via perfil cross-Region |
 | `ClaudeModelsOnlyViaThatProfile` | as mesmas | ARN do modelo nas 3 regiões do perfil, com condição `bedrock:InferenceProfileArn` | o perfil roteia entre us-east-1/2 e us-west-2; a condição impede chamar o modelo por fora do perfil |
 | `ConverseAuthorized*` | `bedrock:ApplyGuardrail`, `bedrock:InvokeTool`, `bedrock:CallWithBearerToken` | guardrails e system tools da conta | a AWS lista essas ações como parte da autorização do `Converse`; hoje o nautilm não usa guardrails, tools do Bedrock nem API keys do Bedrock |
+| `ReadTheDatabaseConnectionSecret` | `secretsmanager:GetSecretValue` | `secret:nautilm/database-??????` (só esse segredo) | URL do Postgres na subida. Se o segredo usar **chave KMS própria** (CMK), acrescente `kms:Decrypt` nela; com a chave padrão `aws/secretsmanager`, não precisa |
 
 Não há `bedrock:*` nem `Resource: "*"` nas ações de invocação: **modelo novo =
 acrescentar o ARN dele** (e o preço em `pricing`, e o apelido em `models`).
@@ -263,8 +372,8 @@ assumir o role.
 ```bash
 aws iam create-role --role-name nautilm \
   --assume-role-policy-document file://deployments/aws/nautilm-pod-identity-trust.json
-aws iam put-role-policy --role-name nautilm --policy-name nautilm-bedrock \
-  --policy-document file://deployments/aws/nautilm-bedrock-policy.json
+aws iam put-role-policy --role-name nautilm --policy-name nautilm \
+  --policy-document file://deployments/aws/nautilm-policy.json
 aws eks create-pod-identity-association --cluster-name <CLUSTER_NAME> --region us-east-2 \
   --namespace llm-gateway --service-account nautilm --role-arn arn:aws:iam::<ACCOUNT_ID>:role/nautilm
 ```
@@ -291,6 +400,7 @@ Antes do primeiro teste na conta, confira também (foi o que travou no lab):
 | ServiceAccount `nautilm` | ClusterRole `system:auth-delegator` (criar `TokenReview`) | já no [manifest](deployments/k8s/nautilm.yaml) |
 | Agentes | **nenhuma** RBAC; só o token projetado da própria ServiceAccount com `audience: nautilm` | [agent-example.yaml](deployments/k8s/agent-example.yaml) |
 | Cluster | add-on **EKS Pod Identity Agent** instalado | `aws eks create-addon --addon-name eks-pod-identity-agent` |
+| Cluster | add-on **Amazon EBS CSI driver** + StorageClass `gp3` (PVC do Postgres) | `aws eks create-addon --addon-name aws-ebs-csi-driver` (o driver precisa do próprio role IAM) |
 
 ### 3. Rede
 
@@ -300,6 +410,10 @@ Antes do primeiro teste na conta, confira também (foi o que travou no lab):
 | nautilm → API do Kubernetes | 443 | TokenReview |
 | nautilm → ElastiCache (Valkey) | 6379 (TLS, `rediss://`) | security group do ElastiCache liberando só o nautilm; não usa IAM |
 | agentes → nautilm | 80 (Service) / 8080 | NetworkPolicy liberando só os namespaces dos agentes |
+| nautilm → Postgres | 5432 | NetworkPolicy do [postgres.yaml](deployments/k8s/postgres.yaml) libera só nautilm e o backup |
+| nautilm → Secrets Manager (`secretsmanager.us-east-2.amazonaws.com`) | 443 | só na subida; sem NAT, VPC endpoint `com.amazonaws.us-east-2.secretsmanager` |
+| nautilm → Entra ID (`login.microsoftonline.com`) | 443 | discovery, chaves e troca do código no login |
+| navegador → nautilm | 443 (Ingress/ALB com HTTPS) | o cookie de sessão é `Secure`; sem HTTPS o login não funciona |
 | Prometheus → nautilm `/metrics` | 8080 | |
 
 ### 4. Segredos (Kubernetes Secret ou Secrets Manager)
@@ -307,8 +421,11 @@ Antes do primeiro teste na conta, confira também (foi o que travou no lab):
 | Variável | Para quê |
 |---|---|
 | `VALKEY_URL` | endpoint do ElastiCache com TLS e AUTH |
-| `NAUTILM_DASHBOARD_TOKEN` | `/v1/usage` e `/dashboard` (sem ele a API de uso fica desligada) |
-| `NAUTILM_TOKEN_<AGENTE>` | só se usar `auth.modes: [tokens]` (agentes fora do cluster) |
+| `NAUTILM_DASHBOARD_TOKEN` | leitura de `/v1/usage` por automação (Grafana, scripts) |
+| `NAUTILM_ENTRA_CLIENT_SECRET` | client secret da App Registration (login do painel) |
+| Secrets Manager `nautilm/database` | URL do Postgres (`postgres://nautilm:<senha>@postgres.llm-gateway:5432/nautilm`) |
+| Secret `postgres-auth` | senha do Postgres para o pod e o backup (**a mesma** da URL acima) |
+| `NAUTILM_TOKEN_<AGENTE>` | só se usar `auth.modes: [tokens]` com tokens fixos no config (o painel substitui isso) |
 
 ### 5. Dentro do nautilm (config)
 
@@ -317,23 +434,35 @@ Antes do primeiro teste na conta, confira também (foi o que travou no lab):
   jogar a conta de uma chamada para outro agente.
 - Token do painel: quem tem vê o custo de todos os agentes; dê só a quem cuida
   do orçamento.
+- Grupos do Entra: `admin_groups` só para o time de gestão do nautilm (cria
+  credencial que gasta dinheiro); `viewer_groups` para quem acompanha custo.
 
 ## Deploy no EKS
 
 [deployments/k8s/nautilm.yaml](deployments/k8s/nautilm.yaml): Namespace,
 ServiceAccount (Pod Identity → role da [seção de permissões](#permissões-necessárias)), ClusterRoleBinding
-`system:auth-delegator`, ConfigMap (com `strict_pricing: true`), Secret
-(`VALKEY_URL` do ElastiCache e `NAUTILM_DASHBOARD_TOKEN`), Deployment (2 réplicas,
-nonroot, read-only), PDB e Service. O painel do Grafana de operação está em
+`system:auth-delegator`, ConfigMap (com `strict_pricing: true`, Entra e
+`database.aws_secret_arn`), Secret (`VALKEY_URL`, `NAUTILM_DASHBOARD_TOKEN`,
+`NAUTILM_ENTRA_CLIENT_SECRET`), Deployment (2 réplicas, nonroot, read-only), PDB
+e Service. O banco: [deployments/k8s/postgres.yaml](deployments/k8s/postgres.yaml)
+(aplique antes). O painel do Grafana de operação está em
 [deployments/grafana/nautilm.json](deployments/grafana/nautilm.json).
+
+Ordem: role IAM + Pod Identity → segredo `nautilm/database` no Secrets Manager
+e Secret `postgres-auth` (mesma senha) → `postgres.yaml` → Secret
+`nautilm-secrets` → `nautilm.yaml` → Ingress HTTPS com o `public_url`.
 
 ## Estrutura
 
 ```
 cmd/nautilm/              main: config, providers, auth, Valkey
 internal/config/          YAML estrito, apelidos, permissões, cobrança, cotas
-internal/auth/            kubernetes (TokenReview), tokens, none
-internal/gateway/         HTTP, fallback, SSE, mascaramento, cotas, cobrança, painel
+internal/auth/            kubernetes (TokenReview), tokens, tokens do banco, none
+internal/gateway/         HTTP, fallback, SSE, mascaramento, cotas, cobrança, painel, admin
+internal/webauth/         login Entra ID (OIDC + PKCE), sessão, papéis
+internal/store/           Postgres (tokens, sessões, auditoria) e versão em memória
+internal/secrets/         URL do banco no Secrets Manager
+internal/oidcmock/        Entra simulado (testes e laboratório)
 internal/pricing/         catálogo de preços por provedor+modelo com vigência
 internal/usage/           livro-caixa (memória/Valkey) e relatórios (JSON/CSV)
 internal/quota/           cotas (memória/Valkey)
@@ -342,7 +471,8 @@ internal/provider/        contrato Provider + bedrock + openaicompat
 internal/metrics/         contadores Prometheus sem dependência
 internal/valkey/          conexão compartilhada
 pkg/openai/               tipos do formato OpenAI (agentes Go podem importar)
-deployments/              k8s e Grafana
+deployments/              k8s (EKS), local-kind, aws (IAM) e Grafana
+examples/                 agentes de teste, local-aws, mock-entra
 docs/                     ADR e roadmap
 ```
 
@@ -351,6 +481,7 @@ docs/                     ADR e roadmap
 ```bash
 make test         # go test ./...
 make test-valkey  # integração com Valkey (cotas e livro-caixa); VALKEY_URL=redis://localhost:6379
+NAUTILM_TEST_DATABASE_URL=postgres://... go test ./internal/store/   # mesmo teste contra Postgres real
 make lint         # go vet ./...
 make docker       # imagem distroless nonroot
 ```

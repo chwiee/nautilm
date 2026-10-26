@@ -26,8 +26,11 @@ import (
 	"github.com/chwiee/nautilm/internal/provider/bedrock"
 	"github.com/chwiee/nautilm/internal/provider/openaicompat"
 	"github.com/chwiee/nautilm/internal/quota"
+	"github.com/chwiee/nautilm/internal/secrets"
+	"github.com/chwiee/nautilm/internal/store"
 	"github.com/chwiee/nautilm/internal/usage"
 	"github.com/chwiee/nautilm/internal/valkey"
+	"github.com/chwiee/nautilm/internal/webauth"
 )
 
 func main() {
@@ -53,12 +56,35 @@ func run(path string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authn, err := buildAuth(cfg, log)
+	// Database (tokens from the dashboard, sessions, audit): optional.
+	var st store.Store
+	var stored *auth.StoredTokens
+	if cfg.Database.Enabled() {
+		st, err = openDatabase(ctx, cfg, log)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		stored = auth.NewStoredTokens(st)
+		stored.OnError = func(err error) { log.Error("stored tokens: database error", "error", err) }
+	}
+
+	authn, err := buildAuth(cfg, stored, log)
 	if err != nil {
 		return err
 	}
 
 	gw := gateway.New(cfg, providers, authn, metrics.New(), log)
+	if st != nil {
+		gw.UseStore(st, stored)
+	}
+	if e := cfg.Dashboard.Entra; e != nil {
+		gw.UseEntra(webauth.New(webauth.Config{Issuer: e.Issuer(), TenantID: e.TenantID, ClientID: e.ClientID,
+			ClientSecret: e.ClientSecret, PublicURL: cfg.Dashboard.PublicURL, AdminGroups: e.AdminGroups,
+			ViewerGroups: e.ViewerGroups, SessionTTL: cfg.Dashboard.SessionTTL, CheckTenant: true}, st, log))
+		log.Info("dashboard sign-in", "provider", "entra", "issuer", e.Issuer(), "public_url", cfg.Dashboard.PublicURL,
+			"admin_groups", len(e.AdminGroups), "viewer_groups", len(e.ViewerGroups))
+	}
 	store := "memory"
 	if cfg.ValkeyURL != "" {
 		vk, err := valkey.Connect(cfg.ValkeyURL)
@@ -132,8 +158,44 @@ func buildProviders(ctx context.Context, cfg *config.Config) (map[string]provide
 	return out, nil
 }
 
-func buildAuth(cfg *config.Config, log *slog.Logger) (auth.Authenticator, error) {
+// openDatabase resolves the URL (env or Secrets Manager) and connects, with
+// retries: a pod that starts before Postgres must wait, not crash-loop.
+func openDatabase(ctx context.Context, cfg *config.Config, log *slog.Logger) (*store.Postgres, error) {
+	url, err := secrets.DatabaseURL(ctx, cfg.Database.URL, cfg.Database.AWSSecretARN, cfg.Database.AWSSecretKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	wait := 2 * time.Second
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		p, err := store.OpenPostgres(ctx, url)
+		if err == nil {
+			source := "url"
+			if cfg.Database.AWSSecretARN != "" {
+				source = "aws_secret"
+			}
+			log.Info("database connected", "source", source)
+			return p, nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, fmt.Errorf("database: %w", err)
+		}
+		log.Warn("database not ready, retrying", "error", err, "in", wait.String())
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		wait = min(wait*2, 30*time.Second)
+	}
+}
+
+func buildAuth(cfg *config.Config, stored *auth.StoredTokens, log *slog.Logger) (auth.Authenticator, error) {
 	var chain auth.Chain
+	if stored != nil {
+		// First: only "naut_..." tokens are looked up; anything else passes on.
+		chain = append(chain, stored)
+	}
 	for _, mode := range cfg.Auth.Modes {
 		switch mode {
 		case "kubernetes":

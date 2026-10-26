@@ -9,6 +9,7 @@ import (
 
 	"github.com/chwiee/nautilm/internal/auth"
 	"github.com/chwiee/nautilm/internal/usage"
+	"github.com/chwiee/nautilm/internal/webauth"
 )
 
 //go:embed web/dashboard.html
@@ -31,16 +32,25 @@ func (g *Gateway) usageAllowed(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, http.StatusNotFound, "usage_disabled", "the usage ledger is disabled (usage.disabled: true)")
 		return false
 	}
+	// 1) A signed-in person (Entra ID) with the viewer role.
+	if s, ok := g.session(r); ok {
+		if hasRole(s, webauth.RoleViewer) {
+			return true
+		}
+		writeError(w, http.StatusForbidden, "forbidden", "your account has no viewer role")
+		return false
+	}
+	// 2) The read-only automation token (CSV exports, scripts).
 	want := g.cfg.Dashboard.Token
-	if want == "" {
-		writeError(w, http.StatusNotFound, "usage_api_disabled", "set dashboard.token in the nautilm config to enable /v1/usage")
+	if want == "" && g.entra == nil {
+		writeError(w, http.StatusNotFound, "usage_api_disabled", "set dashboard.entra (people) or dashboard.token (automation) to enable /v1/usage")
 		return false
 	}
 	got := auth.BearerToken(r)
 	a, b := sha256.Sum256([]byte(got)), sha256.Sum256([]byte(want))
-	if got == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
+	if want == "" || got == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
 		g.metrics.Rejected("", "dashboard_unauthenticated")
-		writeError(w, http.StatusUnauthorized, "unauthenticated", "send Authorization: Bearer <dashboard token>")
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "sign in at /dashboard, or send Authorization: Bearer <dashboard token>")
 		return false
 	}
 	return true

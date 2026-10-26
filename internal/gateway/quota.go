@@ -14,7 +14,7 @@ import (
 // The quota is always the CALLER's (the authenticated identity), even with
 // on-behalf-of: it protects against the caller's own loop.
 func (g *Gateway) limits(id auth.Identity) quota.Limits {
-	pm, pd := g.cfg.Limits(id.Agent)
+	pm, pd := g.quotaLimits(id)
 	return quota.Limits{PerMinute: pm, PerDay: pd}
 }
 

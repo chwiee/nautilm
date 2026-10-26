@@ -53,6 +53,12 @@
       "Resource": "arn:aws:bedrock::<ACCOUNT_ID>:system-tool/*"
     },
     {
+      "Sid": "ReadTheDatabaseConnectionSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-2:<ACCOUNT_ID>:secret:nautilm/database-??????"
+    },
+    {
       "Sid": "ConverseAuthorizedBearerToken",
       "Effect": "Allow",
       "Action": "bedrock:CallWithBearerToken",

@@ -54,6 +54,8 @@ type Config struct {
 	Usage Usage `yaml:"usage"`
 	// Dashboard protects /dashboard data and /v1/usage.
 	Dashboard Dashboard `yaml:"dashboard"`
+	// Database keeps tokens created from the dashboard, sessions and audit.
+	Database Database `yaml:"database"`
 	// ValkeyURL is shared by quotas and the usage ledger. Empty = in memory
 	// (single replica, dev). With several replicas, use Valkey so every
 	// replica sees the same numbers.
@@ -134,10 +136,56 @@ type Usage struct {
 }
 
 type Dashboard struct {
-	// Token for /v1/usage and the dashboard data. Use ${VAR}. Empty = the
-	// usage API is disabled (cost data is internal: it is not open by default).
+	// Token: READ-ONLY access to /v1/usage for automation (CSV, scripts).
+	// Use ${VAR}. People sign in with Entra ID instead (below).
 	Token string `yaml:"token"`
+	// PublicURL is how browsers reach nautilm (https://nautilm.corp...). It
+	// builds the Entra redirect URI (<public_url>/auth/callback) and the
+	// expected Origin of admin requests (CSRF protection).
+	PublicURL string `yaml:"public_url"`
+	// SessionTTL of a signed-in user (default 8h).
+	SessionTTL time.Duration `yaml:"session_ttl"`
+	// Entra: sign-in with Microsoft Entra ID. Needs "database".
+	Entra *Entra `yaml:"entra"`
 }
+
+// Entra configures the sign-in with Microsoft Entra ID (OIDC).
+type Entra struct {
+	TenantID     string `yaml:"tenant_id"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"` // use ${VAR}
+	// Group object IDs. Admins manage tokens and see everything; viewers see
+	// usage and cost. An admin is also a viewer.
+	AdminGroups  []string `yaml:"admin_groups"`
+	ViewerGroups []string `yaml:"viewer_groups"`
+	// IssuerURL overrides https://login.microsoftonline.com/<tenant>/v2.0
+	// (only for the local mock identity provider).
+	IssuerURL string `yaml:"issuer_url"`
+}
+
+// Issuer returns the OIDC issuer URL.
+func (e *Entra) Issuer() string {
+	if e.IssuerURL != "" {
+		return e.IssuerURL
+	}
+	return "https://login.microsoftonline.com/" + e.TenantID + "/v2.0"
+}
+
+// Database keeps tokens created from the dashboard, sessions and the audit
+// trail. One of the two:
+//
+//	database: {url: ${NAUTILM_DATABASE_URL}}               # env (Kubernetes Secret)
+//	database: {aws_secret_arn: arn:aws:secretsmanager:...}  # AWS Secrets Manager
+type Database struct {
+	URL string `yaml:"url"`
+	// AWSSecretARN: the secret holds the connection URL, either as plain
+	// text or as JSON with the key AWSSecretKey (default "url").
+	AWSSecretARN string `yaml:"aws_secret_arn"`
+	AWSSecretKey string `yaml:"aws_secret_key"`
+}
+
+// Enabled tells whether a database is configured.
+func (d Database) Enabled() bool { return d.URL != "" || d.AWSSecretARN != "" }
 
 // Load reads the file, expands ${VAR} and validates.
 func Load(path string) (*Config, error) {
@@ -175,6 +223,12 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if len(c.Auth.Modes) == 0 {
 		c.Auth.Modes = []string{"kubernetes"}
+	}
+	if c.Dashboard.SessionTTL == 0 {
+		c.Dashboard.SessionTTL = 8 * time.Hour
+	}
+	if c.Database.AWSSecretKey == "" {
+		c.Database.AWSSecretKey = "url"
 	}
 	if c.Usage.RetentionDays == 0 {
 		c.Usage.RetentionDays = DefaultRetentionDays
@@ -262,6 +316,23 @@ func (c *Config) Validate() error {
 	if err == nil && c.StrictPricing {
 		if missing := c.MissingPrices(time.Now()); len(missing) > 0 {
 			errs = append(errs, fmt.Errorf("strict_pricing: no price in effect for %s", strings.Join(missing, ", ")))
+		}
+	}
+	if c.Database.URL != "" && c.Database.AWSSecretARN != "" {
+		errs = append(errs, errors.New("database: set url OR aws_secret_arn, not both"))
+	}
+	if e := c.Dashboard.Entra; e != nil {
+		if e.TenantID == "" || e.ClientID == "" || e.ClientSecret == "" {
+			errs = append(errs, errors.New("dashboard.entra: tenant_id, client_id and client_secret are required"))
+		}
+		if len(e.AdminGroups) == 0 {
+			errs = append(errs, errors.New("dashboard.entra: admin_groups needs at least one group object ID"))
+		}
+		if !c.Database.Enabled() {
+			errs = append(errs, errors.New("dashboard.entra needs database (sessions and audit live there)"))
+		}
+		if !strings.HasPrefix(c.Dashboard.PublicURL, "http://") && !strings.HasPrefix(c.Dashboard.PublicURL, "https://") {
+			errs = append(errs, errors.New("dashboard.public_url is required with entra (e.g. https://nautilm.corp.example)"))
 		}
 	}
 	if c.Usage.RetentionDays < 0 {
@@ -365,4 +436,29 @@ func (c *Config) Limits(identity string) (perMinute, perDay int64) {
 	}
 	return pick(a.TokensPerMinute, s.TokensPerMinute, c.Quotas.TokensPerMinute, DefaultTokensPerMinute),
 		pick(a.TokensPerDay, s.TokensPerDay, c.Quotas.TokensPerDay, DefaultTokensPerDay)
+}
+
+// LimitsWith applies the same rules to quotas that come from elsewhere (a
+// token created from the dashboard): own value, else global, else default.
+func (c *Config) LimitsWith(perMinute, perDay int64) (int64, int64) {
+	if c.Quotas.Disabled {
+		return 0, 0
+	}
+	pick := func(own, global, def int64) int64 {
+		for _, v := range []int64{own, global} {
+			if v != 0 {
+				return max(v, 0)
+			}
+		}
+		return def
+	}
+	return pick(perMinute, c.Quotas.TokensPerMinute, DefaultTokensPerMinute),
+		pick(perDay, c.Quotas.TokensPerDay, DefaultTokensPerDay)
+}
+
+// IsListedAgent tells whether the name is an explicit entry in "agents"
+// (not "*"). Tokens created from the dashboard cannot reuse these names.
+func (c *Config) IsListedAgent(name string) bool {
+	_, ok := c.Agents[name]
+	return ok && name != "*"
 }

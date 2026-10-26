@@ -6,6 +6,13 @@
 #      aws eks create-pod-identity-association --cluster-name <cluster> \
 #        --namespace llm-gateway --service-account nautilm --role-arn <role-arn>
 #   3. ElastiCache for Valkey (quotas + usage ledger), URL in the nautilm-secrets Secret.
+#   4. PostgreSQL (dashboard tokens, sessions, audit): deployments/k8s/postgres.yaml.
+#      Its connection URL lives in AWS Secrets Manager as "nautilm/database"
+#      (plain string postgres://... or JSON with a "url" key); the role needs
+#      secretsmanager:GetSecretValue on it (deployments/aws/nautilm-policy.json).
+#   5. Entra ID App Registration (README: "Login com Entra ID"): redirect URI
+#      https://<public_url>/auth/callback, groups claim = groups assigned to the app.
+#   6. HTTPS in front of the dashboard (Ingress/ALB): the session cookie is Secure.
 # The AGENTS need no IAM role at all.
 apiVersion: v1
 kind: Namespace
@@ -35,7 +42,8 @@ subjects:
 # Create it out of band (never commit real values):
 #   kubectl -n llm-gateway create secret generic nautilm-secrets \
 #     --from-literal=VALKEY_URL=rediss://<elasticache-endpoint>:6379 \
-#     --from-literal=NAUTILM_DASHBOARD_TOKEN=$(openssl rand -hex 24)
+#     --from-literal=NAUTILM_DASHBOARD_TOKEN=$(openssl rand -hex 24) \
+#     --from-literal=NAUTILM_ENTRA_CLIENT_SECRET=<client secret of the App Registration>
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -64,7 +72,18 @@ data:
       platform/maestro: {models: [fast, embed], team: platform, on_behalf_of: true}
       "*": {models: [fast, embed], team: unassigned}
     usage: {retention_days: 400}
-    dashboard: {token: ${NAUTILM_DASHBOARD_TOKEN}}
+    dashboard:
+      token: ${NAUTILM_DASHBOARD_TOKEN}            # read-only automation (Grafana, scripts)
+      public_url: https://nautilm.example.com      # CHANGE: the URL people open
+      session_ttl: 8h
+      entra:
+        tenant_id: <tenant-id>                     # CHANGE
+        client_id: <application-client-id>         # CHANGE
+        client_secret: ${NAUTILM_ENTRA_CLIENT_SECRET}
+        admin_groups: [<object-id-of-the-admin-group>]    # create/rotate/revoke tokens
+        viewer_groups: [<object-id-of-the-viewer-group>]  # read usage only
+    database:
+      aws_secret_arn: arn:aws:secretsmanager:us-east-2:<ACCOUNT_ID>:secret:nautilm/database-XXXXXX   # full ARN (Region comes from it)
     valkey_url: ${VALKEY_URL}
 ---
 apiVersion: apps/v1

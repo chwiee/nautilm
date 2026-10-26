@@ -1,0 +1,104 @@
+# PostgreSQL for nautilm on EKS: one pod + EBS volume (PVC), backups, and a
+# NetworkPolicy so only nautilm (and the backup job) reach it.
+#
+# Needs the Amazon EBS CSI driver add-on and a gp3 StorageClass.
+# The password lives in TWO places that must match:
+#   1. Kubernetes Secret "postgres-auth" (used by the Postgres pod and the backup job):
+#        PG=$(openssl rand -hex 24)
+#        kubectl -n llm-gateway create secret generic postgres-auth --from-literal=password="$PG"
+#   2. AWS Secrets Manager "nautilm/database" (read by nautilm):
+#        aws secretsmanager create-secret --region us-east-2 --name nautilm/database \
+#          --secret-string "postgres://nautilm:$PG@postgres.llm-gateway:5432/nautilm?sslmode=disable"
+# Rotating the password = change both, then restart nautilm.
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: llm-gateway}
+spec:
+  selector: {app: postgres}
+  ports: [{name: pg, port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: postgres, namespace: llm-gateway}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      securityContext: {fsGroup: 70, runAsUser: 70, runAsGroup: 70, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - {name: POSTGRES_DB, value: nautilm}
+            - {name: POSTGRES_USER, value: nautilm}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: postgres-auth, key: password}}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports: [{containerPort: 5432}]
+          readinessProbe: {exec: {command: ["pg_isready", "-U", "nautilm", "-d", "nautilm"]}, periodSeconds: 5}
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1Gi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: gp3
+        resources: {requests: {storage: 10Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: postgres-backup, namespace: llm-gateway}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources: {requests: {storage: 10Gi}}
+---
+# Daily pg_dump, last 7 kept. For disaster recovery also take EBS snapshots
+# (AWS Backup or a VolumeSnapshot schedule): this PVC sits in the same AZ.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: postgres-backup, namespace: llm-gateway}
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata: {labels: {app: postgres-backup}}
+        spec:
+          restartPolicy: Never
+          securityContext: {fsGroup: 70, runAsUser: 70, runAsGroup: 70, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: dump
+              image: postgres:17-alpine
+              env:
+                - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: postgres-auth, key: password}}}
+              command: ["/bin/sh", "-c"]
+              args:
+                - >-
+                  set -e;
+                  f=/backup/nautilm-$(date +%Y%m%d-%H%M%S).sql.gz;
+                  pg_dump -h postgres -U nautilm -d nautilm | gzip > "$f";
+                  ls -1t /backup/nautilm-*.sql.gz | tail -n +8 | xargs -r rm -f;
+                  echo "backup ok: $f"
+              securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+              volumeMounts: [{name: backup, mountPath: /backup}]
+          volumes: [{name: backup, persistentVolumeClaim: {claimName: postgres-backup}}]
+---
+# Only nautilm and the backup job may open 5432. Requires a CNI that enforces
+# NetworkPolicy (VPC CNI with network policy enabled, Calico, Cilium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: postgres, namespace: llm-gateway}
+spec:
+  podSelector: {matchLabels: {app: postgres}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: nautilm}}
+        - podSelector: {matchLabels: {app: postgres-backup}}
+      ports: [{port: 5432, protocol: TCP}]

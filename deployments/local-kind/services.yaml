@@ -1,0 +1,110 @@
+# Valkey (quotas + usage ledger), the Entra ID mock and nautilm.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: valkey, namespace: nautilm}
+spec:
+  selector: {matchLabels: {app: valkey}}
+  template:
+    metadata: {labels: {app: valkey}}
+    spec:
+      containers:
+        - name: valkey
+          image: valkey/valkey:8.1-alpine
+          ports: [{containerPort: 6379}]
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, runAsNonRoot: true, runAsUser: 999}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: valkey, namespace: nautilm}
+spec: {selector: {app: valkey}, ports: [{port: 6379, targetPort: 6379}]}
+---
+# LAB ONLY: lets anyone sign in as any test user.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mock-entra, namespace: nautilm}
+spec:
+  selector: {matchLabels: {app: mock-entra}}
+  template:
+    metadata: {labels: {app: mock-entra}}
+    spec:
+      containers:
+        - name: mock-entra
+          image: mock-entra:dev
+          imagePullPolicy: Never
+          args: ["-public-url", "http://localhost:18096", "-internal-url", "http://mock-entra.nautilm:8080",
+                 "-tenant", "00000000-0000-0000-0000-00000000lab1", "-client-id", "nautilm-local"]
+          env:
+            - {name: MOCK_ENTRA_CLIENT_SECRET, valueFrom: {secretKeyRef: {name: nautilm-secrets, key: NAUTILM_ENTRA_CLIENT_SECRET}}}
+          ports: [{containerPort: 8080}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mock-entra, namespace: nautilm}
+spec:
+  type: NodePort
+  selector: {app: mock-entra}
+  ports: [{port: 8080, targetPort: 8080, nodePort: 30096}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: nautilm, namespace: nautilm}
+data:
+  config.yaml: |
+    listen: ":8080"
+    providers:
+      ollama-local: {type: openai, base_url: "http://host.docker.internal:11434/v1", timeout: 300s}
+    models:
+      fast:  {provider: ollama-local, model: "qwen2.5:7b", max_tokens: 300}
+      embed: {type: embedding, provider: ollama-local, model: nomic-embed-text}
+    pricing:
+      - {provider: ollama-local, model: "*", free: true}
+    strict_pricing: true
+    auth:
+      modes: [tokens]          # + tokens created in the dashboard (database)
+    agents: {}                 # every app gets its token from the dashboard
+    quotas: {tokens_per_day: 25000}
+    dashboard:
+      token: ${NAUTILM_DASHBOARD_TOKEN}       # read-only automation
+      public_url: http://localhost:18095
+      session_ttl: 8h
+      entra:
+        tenant_id: 00000000-0000-0000-0000-00000000lab1
+        client_id: nautilm-local
+        client_secret: ${NAUTILM_ENTRA_CLIENT_SECRET}
+        admin_groups: [grp-nautilm-admins]
+        viewer_groups: [grp-nautilm-viewers]
+        issuer_url: http://mock-entra.nautilm:8080/00000000-0000-0000-0000-00000000lab1/v2.0   # mock only
+    database:
+      url: ${NAUTILM_DATABASE_URL}            # Kubernetes Secret (AWS: aws_secret_arn)
+    valkey_url: redis://valkey:6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: nautilm, namespace: nautilm}
+spec:
+  replicas: 2       # two replicas: sessions and tokens must work across both
+  selector: {matchLabels: {app: nautilm}}
+  template:
+    metadata: {labels: {app: nautilm}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: nautilm
+          image: nautilm:dev
+          imagePullPolicy: Never
+          args: ["-config", "/etc/nautilm/config.yaml"]
+          envFrom: [{secretRef: {name: nautilm-secrets}}]
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: config, mountPath: /etc/nautilm}]
+      volumes: [{name: config, configMap: {name: nautilm}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: nautilm, namespace: nautilm}
+spec:
+  type: NodePort
+  selector: {app: nautilm}
+  ports: [{name: http, port: 80, targetPort: http, nodePort: 30095}]

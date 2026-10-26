@@ -87,6 +87,31 @@ tr:hover td { background: var(--surface-2); }
 .dialog input { width: 100%; }
 .err { color: var(--warn); min-height: 1em; }
 .empty { color: var(--ink-3); padding: 24px 0; text-align: center; }
+/* tabs, user, admin views */
+.tabs { display: flex; gap: 4px; margin-left: 16px; }
+.tabs button { background: transparent; border-color: transparent; }
+.tabs button.on { background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--data); }
+.who { color: var(--ink-2); font-size: 13px; }
+main[hidden] { display: none; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.form-grid label { display: grid; gap: 4px; color: var(--ink-2); font-size: 13px; }
+.form-grid .span2 { grid-column: 1 / -1; }
+fieldset { border: 1px solid var(--hair); border-radius: 8px; padding: 8px 12px; color: var(--ink-2); }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.check { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-1); }
+.secret { border-color: rgba(250,178,25,.5); }
+.secret-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.secret-row code { background: var(--surface-2); padding: 8px 10px; border-radius: 6px; word-break: break-all; font-family: var(--mono); flex: 1; min-width: 0; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--hair); }
+.badge.ok { color: var(--ink-1); }
+.badge.off { color: var(--ink-3); }
+.badge.warn { color: var(--warn); border-color: rgba(250,178,25,.5); }
+button.danger:hover { border-color: rgba(208,59,59,.7); }
+.btn-primary { display: block; text-align: center; background: var(--data); color: #fff; padding: 10px; border-radius: 8px; text-decoration: none; font-weight: 600; margin: 8px 0; }
+.btn-primary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+#token-box { display: grid; gap: 8px; }
+#token-box[hidden], #entra-box[hidden] { display: none; }
+@media (max-width: 700px) { .tabs { margin-left: 0; order: 3; width: 100%; } }
 </style>
 </head>
 <body>
@@ -94,13 +119,19 @@ tr:hover td { background: var(--surface-2); }
   <span class="logo" aria-hidden="true"></span>
   <span class="name">Nautilus</span>
   <span class="sub">LLM usage &amp; cost by agent</span>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button data-view="usage" class="on">Usage</button>
+    <button data-view="tokens" class="admin-only" hidden>Tokens</button>
+    <button data-view="audit" class="admin-only" hidden>Audit</button>
+  </nav>
   <span class="right">
     <span class="muted" id="status"></span>
-    <button id="logout" title="Forget the dashboard token in this tab">Sign out</button>
+    <span id="who" class="who"></span>
+    <button id="logout" title="Sign out">Sign out</button>
   </span>
 </header>
 
-<main>
+<main id="view-usage">
   <div class="controls" role="toolbar" aria-label="Filters">
     <div class="seg" id="presets">
       <button data-p="7d" class="on">Last 7 days</button>
@@ -149,15 +180,56 @@ tr:hover td { background: var(--surface-2); }
   <p class="note" id="note"></p>
 </main>
 
+<main id="view-tokens" hidden>
+  <section class="card" aria-labelledby="new-title">
+    <h2 id="new-title">New application token <span class="muted">· for apps outside the cluster (agents in EKS use their ServiceAccount)</span></h2>
+    <form id="new-token" class="form-grid">
+      <label>Agent name <input name="agent" required maxlength="128" pattern="[A-Za-z0-9._/:-]+" placeholder="billing-app"></label>
+      <label>Team <input name="team" placeholder="finance"></label>
+      <label>Cost center <input name="cost_center" placeholder="CC-2040"></label>
+      <label>Valid for (days) <input name="valid_days" type="number" min="1" max="366" value="90"></label>
+      <label>Tokens per minute <input name="tokens_per_minute" type="number" min="-1" value="0"><small class="muted">0 = default, -1 = no limit</small></label>
+      <label>Tokens per day <input name="tokens_per_day" type="number" min="-1" value="0"><small class="muted">0 = default, -1 = no limit</small></label>
+      <fieldset class="span2"><legend>Allowed models (aliases)</legend><div id="alias-list" class="checks"></div></fieldset>
+      <label class="span2">Note <input name="note" maxlength="200" placeholder="what this token is for"></label>
+      <div class="span2"><button type="submit">Create token</button> <span class="err" id="new-err"></span></div>
+    </form>
+  </section>
+  <section class="card secret" id="secret-box" hidden aria-live="polite">
+    <h2>Copy the token now</h2>
+    <p>It is shown <b>only once</b>: nautilm keeps just a hash. Store it in the app's secret manager.</p>
+    <div class="secret-row"><code id="secret-value"></code><button id="copy-secret">Copy</button></div>
+    <p class="muted" id="secret-info"></p>
+    <button id="close-secret">I stored it</button>
+  </section>
+  <section class="card" aria-labelledby="list-title">
+    <h2 id="list-title">Tokens</h2>
+    <div class="tablewrap"><table id="tokens-table"></table></div>
+  </section>
+</main>
+
+<main id="view-audit" hidden>
+  <section class="card">
+    <h2>Audit trail <span class="muted">· last 200 actions</span></h2>
+    <div class="tablewrap"><table id="audit-table"></table></div>
+  </section>
+</main>
+
 <div id="tip" role="tooltip"></div>
 
 <div class="overlay" id="login" role="dialog" aria-modal="true" aria-labelledby="login-title">
   <form class="dialog" id="login-form">
-    <div class="name" id="login-title">Dashboard token</div>
-    <div class="muted">Usage and cost data are internal. Paste the token configured in <code>dashboard.token</code>. It is kept only in this browser tab.</div>
-    <input type="password" id="token" autocomplete="off" placeholder="token" aria-label="Dashboard token">
+    <div class="name" id="login-title">Sign in to Nautilus</div>
+    <div id="entra-box" hidden>
+      <div class="muted">Usage and cost data are internal. Sign in with your company account.</div>
+      <a class="btn-primary" id="entra-login" href="/auth/login">Sign in with Microsoft</a>
+    </div>
+    <div id="token-box" hidden>
+      <div class="muted">Or paste the read-only automation token (<code>dashboard.token</code>). It is kept only in this browser tab.</div>
+      <input type="password" id="token" autocomplete="off" placeholder="token" aria-label="Dashboard token">
+      <button type="submit">Open with token</button>
+    </div>
     <div class="err" id="login-err"></div>
-    <button type="submit">Open</button>
   </form>
 </div>
 
@@ -210,9 +282,18 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const keyLabel = (g, by) => by.map((b) => g.key[b] || "(none)").join(" · ");
 const LABELS = { agent: "Agent", team: "Team", cost_center: "Cost center", provider: "Provider", model: "Model", caller: "Via (caller)", day: "Day" };
 
-async function api(path) {
-  const r = await fetch(path, { headers: { Authorization: "Bearer " + token } });
-  if (r.status === 401) { askToken("Invalid token."); throw new Error("unauthorized"); }
+// me = what /auth/me said: {entra, usage_token, admin_api, user?}
+let me = { entra: false, usage_token: true };
+const isAdmin = () => !!(me.user && me.user.roles.includes("admin"));
+
+// api sends the session cookie (same origin) and, in token mode, the token.
+// The browser adds the Origin header on POST: nautilm checks it (CSRF).
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (!me.user && token) headers.Authorization = "Bearer " + token;
+  if (opts.body) headers["Content-Type"] = "application/json";
+  const r = await fetch(path, Object.assign({}, opts, { headers, credentials: "same-origin" }));
+  if (r.status === 401) { askToken(me.user ? "Your session expired." : (token ? "Invalid token." : "")); throw new Error("unauthorized"); }
   if (!r.ok) {
     let msg = "HTTP " + r.status;
     try { msg = (await r.json()).error.message; } catch {}
@@ -334,7 +415,7 @@ function renderTable(rep) {
 }
 
 async function load() {
-  if (!token) { askToken(""); return; }
+  if (!me.user && !token) { askToken(""); return; }
   $("status").textContent = "loading…";
   try {
     const rep = await (await api("/v1/usage?" + query())).json();
@@ -350,8 +431,10 @@ async function load() {
 
 function askToken(msg) {
   $("login-err").textContent = msg;
+  $("entra-box").hidden = !me.entra;
+  $("token-box").hidden = !me.usage_token;
   $("login").classList.add("show");
-  $("token").focus();
+  (me.entra ? $("entra-login") : $("token")).focus();
 }
 $("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -361,7 +444,116 @@ $("login-form").addEventListener("submit", (e) => {
   $("login").classList.remove("show");
   load();
 });
-$("logout").addEventListener("click", () => { store.clear(); token = ""; askToken(""); });
+$("logout").addEventListener("click", async () => {
+  store.clear(); token = "";
+  if (me.user) { try { await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {} }
+  me.user = null;
+  $("who").textContent = "";
+  document.querySelectorAll(".admin-only").forEach((b) => (b.hidden = true));
+  show("usage");
+  askToken("");
+});
+
+// ---------- views ----------
+function show(view) {
+  for (const v of ["usage", "tokens", "audit"]) $("view-" + v).hidden = v !== view;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
+  if (view === "tokens") loadTokens();
+  if (view === "audit") loadAudit();
+}
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+
+// ---------- tokens (admins) ----------
+const fmtDate = (s) => s ? new Date(s).toLocaleString() : "—";
+function tokenStatus(t, now) {
+  if (t.revoked_at) return '<span class="badge off">revoked</span>';
+  if (new Date(t.expires_at) <= now) return '<span class="badge off">expired</span>';
+  if (new Date(t.expires_at) - now < 15 * 86400000) return '<span class="badge warn">⚠ expires soon</span>';
+  return '<span class="badge ok">active</span>';
+}
+const quota = (v) => v === -1 ? "no limit" : v === 0 ? "default" : fmtInt(v);
+
+async function loadTokens() {
+  try {
+    if (!$("alias-list").childElementCount) {
+      const a = await (await api("/v1/admin/aliases")).json();
+      $("alias-list").innerHTML = a.aliases.filter((x) => x.Type === "chat" || x.Type === "embedding").map((x) =>
+        '<label class="check"><input type="checkbox" name="models" value="' + esc(x.Alias) + '"> ' + esc(x.Alias) +
+        ' <small class="muted">' + esc(x.Provider + " · " + x.Model) + "</small></label>").join("");
+    }
+    const r = await (await api("/v1/admin/tokens")).json();
+    const now = new Date(r.now);
+    const rows = r.tokens.map((t) => {
+      const active = !t.revoked_at && new Date(t.expires_at) > now;
+      return "<tr><td class=\"key\"><b>" + esc(t.agent) + "</b><br><code>" + esc(t.prefix) + "…</code></td><td class=\"key\">" +
+        esc(t.team || "—") + "<br><small class=\"muted\">" + esc(t.cost_center || "") + "</small></td><td class=\"key\">" + esc(t.models.join(", ")) +
+        "</td><td>" + quota(t.tokens_per_minute) + " / min<br>" + quota(t.tokens_per_day) + " / day</td><td class=\"key\">" + esc(t.created_by) +
+        "<br><small class=\"muted\">" + fmtDate(t.created_at) + "</small></td><td>" + fmtDate(t.expires_at) + "</td><td>" + fmtDate(t.last_used_at) +
+        "</td><td>" + tokenStatus(t, now) + (t.revoked_by ? "<br><small class=\"muted\">by " + esc(t.revoked_by) + "</small>" : "") + "</td><td>" +
+        (active ? '<button data-act="rotate" data-id="' + t.id + '">Rotate</button> <button class="danger" data-act="revoke" data-id="' + t.id + '" data-agent="' + esc(t.agent) + '">Revoke</button>' : "") +
+        "</td></tr>";
+    }).join("");
+    $("tokens-table").innerHTML = '<thead><tr><th class="key">Agent / token</th><th class="key">Team</th><th class="key">Models</th><th>Quota</th>' +
+      '<th class="key">Created by</th><th>Expires</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td class="key" colspan="9">No tokens yet.</td></tr>') + "</tbody>";
+  } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
+}
+
+function showSecret(res, what) {
+  $("secret-value").textContent = res.token;
+  $("secret-info").textContent = what + " for " + res.info.agent + " · expires " + fmtDate(res.info.expires_at) +
+    (res.replaces ? " · the old token keeps working until you revoke it" : "");
+  $("secret-box").hidden = false;
+  $("secret-box").scrollIntoView({ behavior: "smooth" });
+}
+$("copy-secret").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("secret-value").textContent); $("copy-secret").textContent = "Copied"; } catch { $("copy-secret").textContent = "Select and copy"; }
+});
+$("close-secret").addEventListener("click", () => { $("secret-value").textContent = ""; $("secret-box").hidden = true; $("copy-secret").textContent = "Copy"; });
+
+$("new-token").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const models = f.getAll("models");
+  if (!models.length) { $("new-err").textContent = "pick at least one model"; return; }
+  const body = { agent: f.get("agent").trim(), team: f.get("team").trim(), cost_center: f.get("cost_center").trim(), models,
+    tokens_per_minute: +f.get("tokens_per_minute"), tokens_per_day: +f.get("tokens_per_day"), valid_days: +f.get("valid_days"), note: f.get("note").trim() };
+  $("new-err").textContent = "";
+  try {
+    const res = await (await api("/v1/admin/tokens", { method: "POST", body: JSON.stringify(body) })).json();
+    e.target.reset();
+    showSecret(res, "New token");
+    loadTokens();
+  } catch (err) { if (err.message !== "unauthorized") $("new-err").textContent = err.message; }
+});
+
+$("tokens-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const id = b.dataset.id;
+  try {
+    if (b.dataset.act === "revoke") {
+      if (!confirm("Revoke the token of " + b.dataset.agent + "? Apps using it stop working right away.")) return;
+      await api("/v1/admin/tokens/" + id + "/revoke", { method: "POST" });
+    } else {
+      const res = await (await api("/v1/admin/tokens/" + id + "/rotate", { method: "POST", body: "{}" })).json();
+      showSecret(res, "Rotated token");
+    }
+    loadTokens();
+  } catch (err) { if (err.message !== "unauthorized") $("status").textContent = "error: " + err.message; }
+});
+
+// ---------- audit (admins) ----------
+async function loadAudit() {
+  try {
+    const r = await (await api("/v1/admin/audit?limit=200")).json();
+    const rows = r.entries.map((a) => "<tr><td>" + fmtDate(a.at) + "</td><td class=\"key\">" + esc(a.actor) + "</td><td class=\"key\"><code>" +
+      esc(a.action) + "</code></td><td class=\"key\">" + esc(a.target) + "</td><td class=\"key\"><small class=\"muted\">" +
+      esc(JSON.stringify(a.details || {})) + "</small></td></tr>").join("");
+    $("audit-table").innerHTML = '<thead><tr><th>When</th><th class="key">Who</th><th class="key">Action</th><th class="key">Target</th><th class="key">Details</th></tr></thead><tbody>' +
+      (rows || '<tr><td class="key" colspan="5">Nothing yet.</td></tr>') + "</tbody>";
+  } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
+}
 
 function setPreset(p) {
   const [f, t] = preset(p);
@@ -387,8 +579,16 @@ $("csv").addEventListener("click", async () => {
   } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
 });
 
-setPreset("7d");
-load();
+// Boot: who am I? Signed in (Entra) → load; otherwise show the sign-in options.
+(async function boot() {
+  setPreset("7d");
+  try { me = await (await fetch("/auth/me", { credentials: "same-origin" })).json(); } catch {}
+  if (me.user) {
+    $("who").textContent = me.user.name + " · " + (isAdmin() ? "admin" : "viewer");
+    document.querySelectorAll(".admin-only").forEach((b) => (b.hidden = !isAdmin()));
+  }
+  load();
+})();
 </script>
 </body>
 </html>

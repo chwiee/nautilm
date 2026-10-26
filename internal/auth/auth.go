@@ -22,7 +22,11 @@ import (
 // Identity is who is calling.
 type Identity struct {
 	Agent  string // e.g. "observability/kubets" or "k8s"
-	Method string // kubernetes | tokens | none
+	Method string // kubernetes | tokens | stored-token | none
+	// TokenID and Profile are set for tokens created from the dashboard:
+	// the profile replaces the YAML entry of the agent.
+	TokenID int64
+	Profile *Profile
 }
 
 var (

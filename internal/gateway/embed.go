@@ -43,7 +43,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	g.reportMasked(w, id, g.maskEmbed(req.Input))
 
 	m, exists := g.cfg.Models[req.Model]
-	allowed := g.cfg.Allowed(id.Agent)
+	allowed := g.allowed(id)
 	switch {
 	case !exists:
 		g.reject(w, id, http.StatusNotFound, "unknown_model", fmt.Sprintf("model %q does not exist in nautilm; use an alias", req.Model))

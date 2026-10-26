@@ -66,8 +66,8 @@ providers:
   bedrock-us-east-2: {type: bedrock, region: us-east-2}   # o NOME do provider é o "onde"
 pricing:
   - provider: bedrock-us-east-2
-    model: anthropic.claude-sonnet-5-5
-    input: 2.20          # USD por 1M tokens (preço regional us-east-2, tabela AWS de 23/10/2026)
+    model: us.anthropic.claude-sonnet-5-5   # perfil de inferência "us." (o Claude 5.5 não tem versão direta em us-east-2)
+    input: 2.20          # USD por 1M tokens (perfil "us.", tabela AWS de 23/10/2026)
     output: 11.00
     cache_read: 0.11     # sem preço de cache = cobra como input (conservador)
     cache_write: 2.75
@@ -226,10 +226,102 @@ token. No EKS: [deployments/k8s/agent-example.yaml](deployments/k8s/agent-exampl
 (token projetado com `audience: nautilm`); o agente **não precisa de role IAM**.
 O agentkit ainda lê `PEDAGIO_URL`/`PEDAGIO_TOKEN`: o valor é o do nautilm.
 
+## Permissões necessárias
+
+Resumo: **só o nautilm tem permissão na AWS**, e só para invocar os modelos que
+serve. Os agentes não têm role IAM nenhuma; eles só precisam de um token
+(ServiceAccount no EKS ou token do nautilm).
+
+### 1. AWS: role do nautilm (EKS Pod Identity)
+
+Arquivos prontos, validados no **IAM Access Analyzer** sem nenhum achado
+(erro, aviso de segurança ou sugestão):
+
+- [deployments/aws/nautilm-bedrock-policy.json](deployments/aws/nautilm-bedrock-policy.json): permissões
+- [deployments/aws/nautilm-pod-identity-trust.json](deployments/aws/nautilm-pod-identity-trust.json): confiança
+
+Troque `<ACCOUNT_ID>` e `<CLUSTER_NAME>` antes de usar.
+
+**Política de permissão** (as ações vêm da *Service Authorization Reference* da
+AWS para as chamadas que o código faz: `Converse`, `ConverseStream` e `InvokeModel`):
+
+| Statement | Ações | Recurso | Por quê |
+|---|---|---|---|
+| `InvokeRegionalModels` | `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream` | ARN `foundation-model` de **cada modelo direto** em us-east-2 (Nova Lite, Titan) | chat, streaming e embeddings |
+| `InvokeClaudeThroughTheUsInferenceProfile` | as mesmas | ARN do **perfil** `us.anthropic.claude-sonnet-5-5` | o Claude 5.5 só existe via perfil cross-Region |
+| `ClaudeModelsOnlyViaThatProfile` | as mesmas | ARN do modelo nas 3 regiões do perfil, com condição `bedrock:InferenceProfileArn` | o perfil roteia entre us-east-1/2 e us-west-2; a condição impede chamar o modelo por fora do perfil |
+| `ConverseAuthorized*` | `bedrock:ApplyGuardrail`, `bedrock:InvokeTool`, `bedrock:CallWithBearerToken` | guardrails e system tools da conta | a AWS lista essas ações como parte da autorização do `Converse`; hoje o nautilm não usa guardrails, tools do Bedrock nem API keys do Bedrock |
+
+Não há `bedrock:*` nem `Resource: "*"` nas ações de invocação: **modelo novo =
+acrescentar o ARN dele** (e o preço em `pricing`, e o apelido em `models`).
+
+**Política de confiança**: `pods.eks.amazonaws.com` com `sts:AssumeRole` e
+`sts:TagSession` (o que o EKS Pod Identity exige), restrita por `aws:SourceAccount`
+e `aws:SourceArn` ao **seu cluster**: o cluster de outra conta não consegue
+assumir o role.
+
+```bash
+aws iam create-role --role-name nautilm \
+  --assume-role-policy-document file://deployments/aws/nautilm-pod-identity-trust.json
+aws iam put-role-policy --role-name nautilm --policy-name nautilm-bedrock \
+  --policy-document file://deployments/aws/nautilm-bedrock-policy.json
+aws eks create-pod-identity-association --cluster-name <CLUSTER_NAME> --region us-east-2 \
+  --namespace llm-gateway --service-account nautilm --role-arn arn:aws:iam::<ACCOUNT_ID>:role/nautilm
+```
+
+Antes do primeiro teste na conta, confira também (foi o que travou no lab):
+
+- **Modelos liberados**: modelos de terceiros (Anthropic etc.) vêm do AWS
+  Marketplace e, na primeira vez, precisam ser habilitados na conta por um
+  administrador (catálogo do Bedrock; a Anthropic pede um formulário de uso).
+  O role do nautilm **não** precisa de permissão do Marketplace.
+- **Quotas do Bedrock acima de zero** para cada modelo, na região:
+  `aws service-quotas list-service-quotas --service-code bedrock --region us-east-2`.
+  Conta nova pode vir com quota **0** (erro `provider_quota_day`); aumento pelo
+  Support Center quando a quota não é ajustável.
+- **Cross-Region permitido?** Conta de região única (como o lab) não usa perfis
+  `us.`/`global.` e, portanto, **não tem Claude 5.5**. Nesse caso tire os dois
+  statements do Claude e use só modelos com `ON_DEMAND` na região
+  (`aws bedrock list-foundation-models --by-inference-type ON_DEMAND`).
+
+### 2. Kubernetes
+
+| Quem | Permissão | Onde |
+|---|---|---|
+| ServiceAccount `nautilm` | ClusterRole `system:auth-delegator` (criar `TokenReview`) | já no [manifest](deployments/k8s/nautilm.yaml) |
+| Agentes | **nenhuma** RBAC; só o token projetado da própria ServiceAccount com `audience: nautilm` | [agent-example.yaml](deployments/k8s/agent-example.yaml) |
+| Cluster | add-on **EKS Pod Identity Agent** instalado | `aws eks create-addon --addon-name eks-pod-identity-agent` |
+
+### 3. Rede
+
+| De → para | Porta | Observação |
+|---|---|---|
+| nautilm → Bedrock Runtime (`bedrock-runtime.us-east-2.amazonaws.com`) | 443 | sem NAT, use o VPC endpoint `com.amazonaws.us-east-2.bedrock-runtime`; mesmo com perfil cross-Region a chamada sai por us-east-2 |
+| nautilm → API do Kubernetes | 443 | TokenReview |
+| nautilm → ElastiCache (Valkey) | 6379 (TLS, `rediss://`) | security group do ElastiCache liberando só o nautilm; não usa IAM |
+| agentes → nautilm | 80 (Service) / 8080 | NetworkPolicy liberando só os namespaces dos agentes |
+| Prometheus → nautilm `/metrics` | 8080 | |
+
+### 4. Segredos (Kubernetes Secret ou Secrets Manager)
+
+| Variável | Para quê |
+|---|---|
+| `VALKEY_URL` | endpoint do ElastiCache com TLS e AUTH |
+| `NAUTILM_DASHBOARD_TOKEN` | `/v1/usage` e `/dashboard` (sem ele a API de uso fica desligada) |
+| `NAUTILM_TOKEN_<AGENTE>` | só se usar `auth.modes: [tokens]` (agentes fora do cluster) |
+
+### 5. Dentro do nautilm (config)
+
+- `agents.<id>.models`: quais apelidos cada agente pode usar (o resto dá 403).
+- `agents.<id>.on_behalf_of: true`: **só** o orquestrador; quem tem isso pode
+  jogar a conta de uma chamada para outro agente.
+- Token do painel: quem tem vê o custo de todos os agentes; dê só a quem cuida
+  do orçamento.
+
 ## Deploy no EKS
 
 [deployments/k8s/nautilm.yaml](deployments/k8s/nautilm.yaml): Namespace,
-ServiceAccount (Pod Identity → role com `bedrock:InvokeModel`), ClusterRoleBinding
+ServiceAccount (Pod Identity → role da [seção de permissões](#permissões-necessárias)), ClusterRoleBinding
 `system:auth-delegator`, ConfigMap (com `strict_pricing: true`), Secret
 (`VALKEY_URL` do ElastiCache e `NAUTILM_DASHBOARD_TOKEN`), Deployment (2 réplicas,
 nonroot, read-only), PDB e Service. O painel do Grafana de operação está em

@@ -93,6 +93,7 @@ var (
 	rounds  = flag.Int("rounds", 50, "max rounds per agent (stops earlier when the daily quota runs out)")
 	only    = flag.String("only", "", "run only this agent")
 	probes  = flag.Bool("probes", false, "also fire the known error cases (401, 403, 404, 400, on-behalf-of)")
+	aliasF  = flag.String("alias", "", "use this alias for every agent (e.g. compare, to test the second model)")
 	pause   = flag.Duration("pause", 500*time.Millisecond, "pause between calls of the same agent")
 	client  = &http.Client{Timeout: 3 * time.Minute}
 	printMu sync.Mutex

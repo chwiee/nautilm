@@ -99,8 +99,8 @@ func TestAdminAndViewerSignIn(t *testing.T) {
 func TestDeniedSignIns(t *testing.T) {
 	e := setup(t)
 	for user, want := range map[string]string{
-		"carla": "not in an allowed group",
-		"dani":  "too many groups", // overage: the token has no "groups" claim
+		"carla": "Group IDs in your sign-in: unrelated", // tells which ID to map
+		"dani":  "too many groups",                      // overage: the token has no "groups" claim
 	} {
 		_, resp := signIn(t, e, user)
 		body, _ := io.ReadAll(resp.Body)

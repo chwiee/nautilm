@@ -193,7 +193,7 @@ func (e *Entra) Callback(w http.ResponseWriter, r *http.Request) {
 	admin, viewer := e.groups()
 	roles := RolesFor(cl.Groups, admin, viewer)
 	if len(roles) == 0 {
-		e.denied(ctx, w, who, "not in an allowed group", "ask the nautilm team to add you to the viewer or admin group")
+		e.denied(ctx, w, who, "not in an allowed group", "ask the nautilm team to add you to the viewer or admin group. "+groupsSeen(cl.Groups))
 		return
 	}
 	u := store.User{ID: cl.OID, Name: firstNonEmpty(cl.Name, who), Email: firstNonEmpty(cl.Email, cl.PreferredUsername),
@@ -281,6 +281,25 @@ func (e *Entra) denied(ctx context.Context, w http.ResponseWriter, who, reason, 
 		msg += " " + detail + "."
 	}
 	page(w, http.StatusForbidden, "Access denied", msg)
+}
+
+// groupsSeen tells the denied user (and the audit log) which group IDs came in
+// the sign-in: it is how an admin finds the ID to map, and "none" means the
+// App Registration has no groups claim (Token configuration → Add groups claim).
+// Only the user's own group IDs: nothing they could not see in Entra themselves.
+func groupsSeen(groups []string) string {
+	if len(groups) == 0 {
+		return "Your sign-in carried NO groups: the App Registration needs a groups claim (Token configuration → Add groups claim)"
+	}
+	shown := groups
+	if len(shown) > 20 {
+		shown = shown[:20]
+	}
+	s := "Group IDs in your sign-in: " + strings.Join(shown, ", ")
+	if len(groups) > len(shown) {
+		s += fmt.Sprintf(" (and %d more)", len(groups)-len(shown))
+	}
+	return s
 }
 
 func (e *Entra) audit(ctx context.Context, a store.AuditEntry) {

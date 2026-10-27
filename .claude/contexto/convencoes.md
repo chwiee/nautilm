@@ -41,6 +41,7 @@
 - CSS `display: grid` numa classe anula o atributo `hidden`: use `.classe[hidden] { display: none; }`.
 - Provedor OpenAI-compatível reenvia o **JSON bruto** (`provider.Call.Raw`): chamadas montadas pelo
   próprio nautilm (testes da aba Config) precisam preencher `Raw`, senão vão sem `messages`.
+- `auth.modes: [kubernetes, tokens]`: o validador do Kubernetes recusava tokens estáticos (não passava adiante). Corrigido: token que não é JWT é passado ao próximo. Achado só no teste da demo num cluster real.
 - Entra simulado precisa de `_claim_sources` no caso de overage, senão o go-oidc recusa o token.
 - `git push` pode travar esperando login do Git Credential Manager; o `gh` já está autenticado:
   `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push` (só naquela chamada).

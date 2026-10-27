@@ -69,7 +69,10 @@ func NewKubernetesInCluster(audience string) (*Kubernetes, error) {
 
 func (k *Kubernetes) Authenticate(r *http.Request) (Identity, error) {
 	tok := BearerToken(r)
-	if tok == "" {
+	if !looksLikeJWT(tok) {
+		// A ServiceAccount token is always a JWT. Anything else (a static
+		// token, naut_...) is not ours: let the next authenticator try,
+		// whatever the order in auth.modes, and skip a useless TokenReview.
 		return Identity{}, ErrNoCredentials
 	}
 	key := sha256.Sum256([]byte(tok))
@@ -130,6 +133,20 @@ func (k *Kubernetes) review(tok string) (Identity, error) {
 		return Identity{}, ErrInvalid // ServiceAccounts only, not human users
 	}
 	return Identity{Agent: strings.Replace(strings.TrimPrefix(u, prefix), ":", "/", 1), Method: "kubernetes"}, nil
+}
+
+// looksLikeJWT: three non-empty base64url parts separated by dots.
+func looksLikeJWT(tok string) bool {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (k *Kubernetes) fromCache(key [32]byte) (Identity, bool) {

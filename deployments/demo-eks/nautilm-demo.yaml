@@ -1,0 +1,179 @@
+# nautilm DEMO on an existing EKS: everything in ONE namespace, NO disks.
+#
+#   Valkey and PostgreSQL run as pods with no volume: deleting or rescheduling
+#   a pod LOSES its data (tokens created in the dashboard, Config tab changes,
+#   audit, usage totals). On purpose: this is a single-user demo to learn and
+#   to saturate. Production uses RDS + ElastiCache: only two config lines change.
+#
+# Do not apply this file directly: deployments/demo-eks/up.sh fills the
+# placeholders (double underscores) and creates the Secrets (random values, never in git).
+# Access: kubectl port-forward (no load balancer, no cost).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nautilm-demo
+  labels: {app.kubernetes.io/part-of: nautilm-demo}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: nautilm, namespace: nautilm-demo}   # Pod Identity → IAM role with Bedrock InvokeModel
+---
+# Lets nautilm validate the agents' ServiceAccount tokens (TokenReview).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautilm-demo-auth-delegator
+  labels: {app.kubernetes.io/part-of: nautilm-demo}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects: [{kind: ServiceAccount, name: nautilm, namespace: nautilm-demo}]
+---
+# ---------- Valkey (quotas + usage ledger), in memory only ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: valkey, namespace: nautilm-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: valkey}}
+  template:
+    metadata: {labels: {app: valkey}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: valkey
+          image: valkey/valkey:8.1-alpine
+          args: ["--save", "", "--appendonly", "no"]   # no persistence: nothing to write
+          ports: [{containerPort: 6379}]
+          readinessProbe: {exec: {command: ["valkey-cli", "ping"]}, periodSeconds: 5}
+          resources: {requests: {cpu: 20m, memory: 32Mi}, limits: {memory: 256Mi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: valkey, namespace: nautilm-demo}
+spec: {selector: {app: valkey}, ports: [{port: 6379, targetPort: 6379}]}
+---
+# ---------- PostgreSQL (dashboard tokens, sessions, audit, Config tab), NO disk ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres, namespace: nautilm-demo}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      securityContext: {fsGroup: 70, runAsUser: 70, runAsGroup: 70, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - {name: POSTGRES_DB, value: nautilm}
+            - {name: POSTGRES_USER, value: nautilm}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: postgres-auth, key: password}}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports: [{containerPort: 5432}]
+          readinessProbe: {exec: {command: ["pg_isready", "-U", "nautilm", "-d", "nautilm"]}, periodSeconds: 5}
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}   # lives and dies with the pod
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: nautilm-demo}
+spec: {selector: {app: postgres}, ports: [{port: 5432, targetPort: 5432}]}
+---
+# ---------- nautilm ----------
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: nautilm, namespace: nautilm-demo}
+data:
+  config.yaml: |
+    listen: ":8080"
+    providers:
+      bedrock:
+        type: bedrock
+        region: __REGION__
+    models:
+      fast:  {provider: bedrock, model: __FAST_MODEL__, max_tokens: 512}
+      cheap: {provider: bedrock, model: __FAST_MODEL__, max_tokens: 512}       # alias used by examples/agents
+      smart: {provider: bedrock, model: __SMART_MODEL__, max_tokens: 1024, prompt_cache: explicit, fallback: [fast]}
+      embed: {type: embedding, provider: bedrock, model: __EMBED_MODEL__, dimensions: 1024}
+    # Prices of the DEFAULT models (us-east-1/us-east-2 list price, USD per 1M tokens).
+    # Changed a model? Add its price in the Config tab (Prices); without it the
+    # calls show as "unpriced" (never zero).
+    pricing:
+      - {provider: bedrock, model: amazon.nova-lite-v1:0, input: 0.06, output: 0.24, cache_read: 0.015, effective_from: 2026-01-01}
+      - {provider: bedrock, model: amazon.nova-pro-v1:0, input: 0.80, output: 3.20, cache_read: 0.20, effective_from: 2026-01-01}
+      - {provider: bedrock, model: amazon.titan-embed-text-v2:0, input: 0.02, effective_from: 2026-01-01}
+    strict_pricing: false
+    auth:
+      modes: [kubernetes, tokens]
+      audience: nautilm
+      tokens:                     # for examples/agents through the port-forward
+        k8s: ${NAUTILM_TOKEN_K8S}
+        mid: ${NAUTILM_TOKEN_MID}
+        marcia: ${NAUTILM_TOKEN_MARCIA}
+        claudia: ${NAUTILM_TOKEN_CLAUDIA}
+    agents:
+      nautilm-demo/demo-agent: {models: [fast, smart, embed], team: demo, cost_center: DEMO}   # ServiceAccount
+      k8s:     {models: [cheap, fast, smart, embed], team: ce, cost_center: CC-1001}
+      mid:     {models: [cheap, fast, smart, embed], team: ce, cost_center: CC-1001}
+      marcia:  {models: [cheap, fast], team: finance, cost_center: CC-2040}
+      claudia: {models: [cheap, fast], team: support, cost_center: CC-3100, tokens_per_minute: 20000}
+    # The COST CEILING of the demo: tokens (input + output) per agent.
+    # 1M tokens/day on Nova Lite ≈ US$ 0.10–0.25; on Nova Pro ≈ US$ 1–3.
+    # Saturating on purpose? Hitting this limit (429 quota_day) is part of the test.
+    quotas: {tokens_per_minute: 100000, tokens_per_day: 1000000}
+    usage: {retention_days: 30}
+    dashboard:
+      token: ${NAUTILM_DASHBOARD_TOKEN}
+      public_url: http://localhost:18095      # port-forward; same redirect URI as the local lab
+      session_ttl: 8h
+      entra:
+        tenant_id: __TENANT_ID__
+        client_id: __CLIENT_ID__
+        client_secret: ${NAUTILM_ENTRA_CLIENT_SECRET}
+        admin_groups: [__ADMIN_GROUP__]
+        viewer_groups: [__VIEWER_GROUP__]
+    database:
+      url: ${NAUTILM_DATABASE_URL}            # production: aws_secret_arn (RDS)
+    valkey_url: redis://valkey:6379           # production: rediss://<ElastiCache>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: nautilm, namespace: nautilm-demo}
+spec:
+  replicas: 2       # two replicas: shows that tokens, sessions and Config tab changes work across both
+  selector: {matchLabels: {app: nautilm}}
+  template:
+    metadata: {labels: {app: nautilm}}
+    spec:
+      serviceAccountName: nautilm
+      terminationGracePeriodSeconds: 70
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: nautilm
+          image: __IMAGE__
+          args: ["-config", "/etc/nautilm/config.yaml"]
+          envFrom: [{secretRef: {name: nautilm-secrets}}]
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 256Mi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: config, mountPath: /etc/nautilm}]
+      volumes: [{name: config, configMap: {name: nautilm}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: nautilm, namespace: nautilm-demo}
+spec: {selector: {app: nautilm}, ports: [{name: http, port: 80, targetPort: http}]}
+---
+# ---------- a demo agent identity (ServiceAccount token, no secret) ----------
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: demo-agent, namespace: nautilm-demo}

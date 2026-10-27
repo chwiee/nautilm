@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeTheDemoModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:<REGION>::foundation-model/amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:<REGION>::foundation-model/amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:<REGION>::foundation-model/amazon.titan-embed-text-v2:0"
+      ]
+    }
+  ]
+}

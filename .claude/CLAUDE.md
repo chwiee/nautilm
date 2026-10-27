@@ -17,7 +17,7 @@ nos provedores (Amazon Bedrock, e qualquer API OpenAI-compatível). Em troca, a 
   **aba Config** (provedores, apelidos, preços e grupos sem reiniciar, com teste, histórico e rollback);
 - **prompt cache do Bedrock** (marcas `cache_control` viram `cachePoint`).
 
-- Módulo Go: `github.com/chwiee/nautilm` · Go 1.26 · repositório **privado** https://github.com/chwiee/nautilm (`main`).
+- Módulo Go: `github.com/chwiee/nautilm` · Go 1.26 · repositório **público** https://github.com/chwiee/nautilm (`main`).
 - Faz parte da plataforma de agentes junto com **mirante** (painel/telão dos agentes), **maestro**
   (orquestrador), **agentkit** (agente padrão) e **MidTS** (agente de middleware).
 
@@ -96,6 +96,7 @@ ana = admin, bruno = viewer, carla = sem grupo, dani = overage).
 | Convenções de código, como estender, testes e armadilhas conhecidas | `.claude/contexto/convencoes.md` |
 | O que está validado, o que não está, pendências | `.claude/contexto/estado-e-roadmap.md` |
 | **Implantar na organização (runbook para IA, com pontos de decisão humana)** | `docs/IMPLANTACAO-EMPRESA.md` |
+| **Demo num EKS existente (um namespace, sem disco, custo ~zero)** | `deployments/demo-eks/README.md` |
 | **Migrar um agente para o nautilm (MidTS, agentkit, genérico)** | `docs/MIGRACAO-AGENTES.md` |
 | Manual do usuário (pt-BR): custo, painel, aba Config, prompt cache, permissões | `README.md` |
 | Por que construir em vez de usar Bifrost/Agent Router | `docs/adr/0001-construir-vs-comprar.md` |

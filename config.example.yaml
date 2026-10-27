@@ -27,6 +27,7 @@ models:
     # Check with: aws bedrock list-inference-profiles --region us-east-2
     model: us.anthropic.claude-sonnet-5-5
     max_tokens: 4096
+    prompt_cache: explicit        # honor the agents' cache markers (Claude supports it)
     fallback: [fast]              # on 429/5xx, try "fast"
   fast:
     provider: bedrock-us-east-2

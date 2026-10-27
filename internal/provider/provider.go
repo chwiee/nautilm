@@ -29,6 +29,12 @@ type Call struct {
 	// and the alias it asked for, never the real model ID.
 	ID    string
 	Alias string
+	// PromptCache of the alias: "" or "off" = cache markers are ignored,
+	// "explicit" = honor the agent's markers (cache_control), "auto" = also
+	// cache the system prompt when the agent sent no marker. Bedrock turns
+	// markers into cachePoint blocks; OpenAI-compatible providers get the
+	// agent's JSON as it came (markers included).
+	PromptCache string
 }
 
 // Provider is an LLM backend.

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -120,6 +121,7 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 	}
 	in.InferenceConfig = inf
 
+	pc := cachePoints{on: c.PromptCache == "explicit" || c.PromptCache == "auto"}
 	for i, m := range r.Messages {
 		if m.Content.HasNonText {
 			return nil, provider.Errorf(http.StatusBadRequest, "unsupported", "message %d: only text content is supported (no images yet)", i)
@@ -128,17 +130,25 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 		var blocks []types.ContentBlock
 		switch m.Role {
 		case "system", "developer":
-			if m.Content.Text != "" {
-				in.System = append(in.System, &types.SystemContentBlockMemberText{Value: m.Content.Text})
+			for _, s := range m.Content.Segments() {
+				if s.Text != "" {
+					in.System = append(in.System, &types.SystemContentBlockMemberText{Value: s.Text})
+				}
+				if s.Cache && pc.take() {
+					in.System = append(in.System, systemCachePoint())
+				}
+			}
+			if m.CacheControl != nil && pc.take() {
+				in.System = append(in.System, systemCachePoint())
 			}
 			continue
 		case "user":
 			role = types.ConversationRoleUser
-			blocks = append(blocks, &types.ContentBlockMemberText{Value: nonEmpty(m.Content.Text)})
+			blocks = pc.textBlocks(m.Content, true)
 		case "assistant":
 			role = types.ConversationRoleAssistant
 			if m.Content.Text != "" {
-				blocks = append(blocks, &types.ContentBlockMemberText{Value: m.Content.Text})
+				blocks = pc.textBlocks(m.Content, false)
 			}
 			for _, tc := range m.ToolCalls {
 				args, err := argsDoc(tc.Function.Arguments)
@@ -155,8 +165,15 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 				ToolUseId: aws.String(m.ToolCallID),
 				Content:   []types.ToolResultContentBlock{&types.ToolResultContentBlockMemberText{Value: nonEmpty(m.Content.Text)}},
 			}})
+			// A tool result cannot hold a cachePoint: it goes right after it.
+			if slices.ContainsFunc(m.Content.Parts, func(p openai.TextPart) bool { return p.Cache }) && pc.take() {
+				blocks = append(blocks, messageCachePoint())
+			}
 		default:
 			return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "unknown role %q", m.Role)
+		}
+		if m.CacheControl != nil && len(blocks) > 0 && pc.take() {
+			blocks = append(blocks, messageCachePoint())
 		}
 		if len(blocks) == 0 {
 			continue
@@ -169,6 +186,12 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 	}
 	if len(in.Messages) == 0 {
 		return nil, provider.Errorf(http.StatusBadRequest, "invalid_request", "no user/assistant message")
+	}
+	// auto: the agent sent no marker, cache tools + system (the part that
+	// repeats on every call of an agent). Prefix order in Bedrock is
+	// tools → system → messages, so one point after the system covers both.
+	if c.PromptCache == "auto" && pc.used == 0 && len(in.System) > 0 {
+		in.System = append(in.System, systemCachePoint())
 	}
 
 	if len(r.Tools) > 0 {
@@ -188,6 +211,51 @@ func buildInput(c provider.Call) (*bedrockruntime.ConverseInput, error) {
 		in.ToolConfig = tc
 	}
 	return in, nil
+}
+
+// maxCachePoints: Bedrock (Claude) accepts at most 4 cache checkpoints per
+// request; more is an error. Extra markers are dropped, keeping the FIRST
+// ones: the earliest prefix (system, guides) is the most stable.
+const maxCachePoints = 4
+
+type cachePoints struct {
+	on   bool
+	used int
+}
+
+// take says whether one more cachePoint may be added (and counts it).
+func (p *cachePoints) take() bool {
+	if !p.on || p.used >= maxCachePoints {
+		return false
+	}
+	p.used++
+	return true
+}
+
+// textBlocks turns a content into text blocks, with a cachePoint after each
+// marked part. required = the role needs a non-empty text (user).
+func (p *cachePoints) textBlocks(c openai.Content, required bool) []types.ContentBlock {
+	var out []types.ContentBlock
+	for _, s := range c.Segments() {
+		if s.Text != "" || (required && len(c.Parts) == 0) {
+			out = append(out, &types.ContentBlockMemberText{Value: nonEmpty(s.Text)})
+		}
+		if s.Cache && len(out) > 0 && p.take() {
+			out = append(out, messageCachePoint())
+		}
+	}
+	if required && len(out) == 0 {
+		out = append(out, &types.ContentBlockMemberText{Value: nonEmpty("")})
+	}
+	return out
+}
+
+func systemCachePoint() types.SystemContentBlock {
+	return &types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{Type: types.CachePointTypeDefault}}
+}
+
+func messageCachePoint() types.ContentBlock {
+	return &types.ContentBlockMemberCachePoint{Value: types.CachePointBlock{Type: types.CachePointTypeDefault}}
 }
 
 // toolChoice: "auto" → Auto, "required" → Any, {"function":{"name":X}} → Tool X.

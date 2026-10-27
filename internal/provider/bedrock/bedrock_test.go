@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -145,5 +146,105 @@ func TestDailyQuotaIsAProviderError(t *testing.T) {
 	}
 	if noRetryOnDailyQuota(minute) != aws.UnknownTernary {
 		t.Error("a per-minute throttle keeps the default retry behavior")
+	}
+}
+
+// kinds lists the block kinds in order ("text", "cache", "toolResult"...).
+func kinds[T any](blocks []T) string {
+	var out []string
+	for _, b := range blocks {
+		switch any(b).(type) {
+		case *types.SystemContentBlockMemberText, *types.ContentBlockMemberText:
+			out = append(out, "text")
+		case *types.SystemContentBlockMemberCachePoint, *types.ContentBlockMemberCachePoint:
+			out = append(out, "cache")
+		case *types.ContentBlockMemberToolResult:
+			out = append(out, "toolResult")
+		case *types.ContentBlockMemberToolUse:
+			out = append(out, "toolUse")
+		default:
+			out = append(out, fmt.Sprintf("%T", b))
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// The agent's cache_control markers (Anthropic/OpenRouter convention) become
+// cachePoint blocks at the same place: this is what keeps the MidTS CAG.
+func TestPromptCacheMarkers(t *testing.T) {
+	req := parse(t, `{"model":"smart","messages":[
+	  {"role":"system","content":[{"type":"text","text":"rules"},{"type":"text","text":"long guides","cache_control":{"type":"ephemeral"}}]},
+	  {"role":"system","content":"memory summary"},
+	  {"role":"user","content":[{"type":"text","text":"old question","cache_control":{"type":"ephemeral"}}]},
+	  {"role":"assistant","content":"answer","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"new question"}]}`)
+
+	in, err := buildInput(provider.Call{Model: "anthropic.claude", Request: req, PromptCache: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kinds(in.System); got != "text,text,cache,text" {
+		t.Errorf("system: %s", got)
+	}
+	if got := kinds(in.Messages[0].Content); got != "text,cache" {
+		t.Errorf("user part marker: %s", got)
+	}
+	if got := kinds(in.Messages[1].Content); got != "text,cache" {
+		t.Errorf("message-level marker: %s", got)
+	}
+	if got := kinds(in.Messages[2].Content); got != "text" {
+		t.Errorf("no marker: %s", got)
+	}
+
+	// off (default): markers are ignored, the text is the same.
+	in, _ = buildInput(provider.Call{Model: "qwen", Request: req})
+	if got := kinds(in.System) + "|" + kinds(in.Messages[0].Content); got != "text,text,text|text" {
+		t.Errorf("off must drop every cachePoint: %s", got)
+	}
+}
+
+func TestPromptCacheAutoAndLimit(t *testing.T) {
+	plain := parse(t, `{"model":"smart","messages":[{"role":"system","content":"guides"},{"role":"user","content":"hi"}]}`)
+	in, _ := buildInput(provider.Call{Model: "anthropic.claude", Request: plain, PromptCache: "auto"})
+	if got := kinds(in.System); got != "text,cache" {
+		t.Errorf("auto must cache the system prompt: %s", got)
+	}
+	in, _ = buildInput(provider.Call{Model: "anthropic.claude", Request: plain, PromptCache: "explicit"})
+	if got := kinds(in.System); got != "text" {
+		t.Errorf("explicit without markers adds nothing: %s", got)
+	}
+
+	// Six markers: Bedrock accepts 4. The first 4 stay (most stable prefix).
+	var msgs []string
+	for i := 0; i < 6; i++ {
+		role := map[bool]string{true: "user", false: "assistant"}[i%2 == 0]
+		msgs = append(msgs, fmt.Sprintf(`{"role":%q,"content":[{"type":"text","text":"m%d","cache_control":{"type":"ephemeral"}}]}`, role, i))
+	}
+	many := parse(t, `{"model":"smart","messages":[`+strings.Join(msgs, ",")+`,{"role":"user","content":"last"}]}`)
+	in, _ = buildInput(provider.Call{Model: "anthropic.claude", Request: many, PromptCache: "auto"})
+	n := 0
+	for _, m := range in.Messages {
+		n += strings.Count(kinds(m.Content), "cache")
+	}
+	if n != maxCachePoints || kinds(in.Messages[4].Content) != "text" {
+		t.Errorf("cache points %d (want %d, first ones kept)", n, maxCachePoints)
+	}
+	if kinds(in.System) != "" {
+		t.Error("auto must not add a point when the agent sent markers")
+	}
+}
+
+// A marker on a tool result goes right after the toolResult block.
+func TestPromptCacheAfterToolResult(t *testing.T) {
+	req := parse(t, `{"model":"smart","messages":[
+	  {"role":"user","content":"pods?"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"list","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"t1","content":[{"type":"text","text":"big log","cache_control":{"type":"ephemeral"}}]}]}`)
+	in, err := buildInput(provider.Call{Model: "anthropic.claude", Request: req, PromptCache: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kinds(in.Messages[2].Content); got != "toolResult,cache" {
+		t.Errorf("tool result marker: %s", got)
 	}
 }

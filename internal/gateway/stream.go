@@ -52,7 +52,7 @@ func (g *Gateway) streamChain(ctx context.Context, st *live.State, w http.Respon
 			res.ttft = time.Since(start)
 		}}
 		call := provider.Call{Model: m.Model, Request: req, Raw: raw, DefaultMaxTokens: m.MaxTokens,
-			Header: h, ID: callID, Alias: req.Model}
+			Header: h, ID: callID, Alias: req.Model, PromptCache: m.PromptCache}
 
 		t0 := time.Now()
 		var u *openai.Usage

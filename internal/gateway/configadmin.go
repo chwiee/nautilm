@@ -132,7 +132,7 @@ func (g *Gateway) configView(w http.ResponseWriter, r *http.Request, s store.Ses
 			}
 		}
 		models = append(models, modelView{Alias: alias, Source: src, ModelDef: live.ModelDef{Type: m.Type, Provider: m.Provider,
-			Model: m.Model, MaxTokens: m.MaxTokens, Dimensions: m.Dimensions, Fallback: m.Fallback}})
+			Model: m.Model, MaxTokens: m.MaxTokens, Dimensions: m.Dimensions, Fallback: m.Fallback, PromptCache: m.PromptCache}})
 	}
 	out["models"] = models
 

@@ -60,6 +60,8 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// CacheControl on the whole message = a cache marker at its end.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // Content accepts both OpenAI shapes: a plain string or a list of parts
@@ -69,6 +71,22 @@ type Content struct {
 	Text string
 	// HasNonText tells that non-text parts were sent (e.g. image_url).
 	HasNonText bool
+	// Parts keeps the text parts IN ORDER when the content came as a list
+	// with a prompt-cache marker, so the marker stays where the agent put it.
+	Parts []TextPart
+}
+
+// TextPart is one text part. Cache marks the END of a stable prefix
+// ("cache_control": {"type": "ephemeral"}, the convention of Anthropic,
+// OpenRouter and LiteLLM): everything up to here may be cached.
+type TextPart struct {
+	Text  string
+	Cache bool
+}
+
+// CacheControl is the prompt-cache marker of a part or a message.
+type CacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 func (c *Content) UnmarshalJSON(b []byte) error {
@@ -79,22 +97,38 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 		return json.Unmarshal(b, &c.Text)
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type         string        `json:"type"`
+		Text         string        `json:"text"`
+		CacheControl *CacheControl `json:"cache_control"`
 	}
 	if err := json.Unmarshal(b, &parts); err != nil {
 		return err
 	}
 	var sb strings.Builder
+	cached := false
 	for _, p := range parts {
 		if p.Type == "text" {
 			sb.WriteString(p.Text)
+			c.Parts = append(c.Parts, TextPart{Text: p.Text, Cache: p.CacheControl != nil})
+			cached = cached || p.CacheControl != nil
 		} else {
 			c.HasNonText = true
 		}
 	}
 	c.Text = sb.String()
+	if !cached {
+		c.Parts = nil // no marker: the plain text is enough
+	}
 	return nil
+}
+
+// Segments returns the text in order, with the cache markers. Without
+// markers it is one segment with the whole text.
+func (c Content) Segments() []TextPart {
+	if len(c.Parts) > 0 {
+		return c.Parts
+	}
+	return []TextPart{{Text: c.Text}}
 }
 
 func (c Content) MarshalJSON() ([]byte, error) { return json.Marshal(c.Text) }

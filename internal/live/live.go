@@ -53,6 +53,8 @@ type ModelDef struct {
 	MaxTokens  int      `json:"max_tokens,omitempty"`
 	Dimensions int      `json:"dimensions,omitempty"`
 	Fallback   []string `json:"fallback,omitempty"`
+	// PromptCache: off | explicit | auto (see config.Model).
+	PromptCache string `json:"prompt_cache,omitempty"`
 }
 
 // PriceDef is a price entry added from the dashboard (USD per 1M tokens).
@@ -196,7 +198,7 @@ func Merge(base *config.Config, o Overrides, keys map[string]Key, broken map[str
 			t = "chat"
 		}
 		c.Models[alias] = config.Model{Type: t, Provider: d.Provider, Model: d.Model, MaxTokens: d.MaxTokens,
-			Dimensions: d.Dimensions, Fallback: slices.Clone(d.Fallback)}
+			Dimensions: d.Dimensions, Fallback: slices.Clone(d.Fallback), PromptCache: d.PromptCache}
 	}
 	c.Pricing = slices.Clone(base.Pricing)
 	for _, p := range o.Pricing {

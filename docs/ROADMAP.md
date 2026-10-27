@@ -16,6 +16,7 @@
 - (v0.5) Erro `provider_quota_day`: quota diária da conta no provedor, sem retry; permissões documentadas e validadas no IAM Access Analyzer
 - (v0.6) **Login Entra ID** (OIDC + PKCE, grupos admin/viewer, overage negado com dica), **tokens de aplicação pelo painel** (hash, mostrado uma vez, validade, cotas e apelidos próprios, rotação sem downtime, revogação), **auditoria**; PostgreSQL em pod com PVC + backup; URL do banco no Secrets Manager (local: Secret do cluster); laboratório kind com Entra simulado
 - (v0.7) **Aba Config**: provedores (assistente com secret no Secrets Manager e teste em etapas), apelidos com teste real antes de salvar, preços e mapa de grupos do Entra; revisões no Postgres com histórico, restauração e detecção de edição concorrente; recarga sem reiniciar nas réplicas; papéis recalculados a cada requisição
+- (v0.8) **Prompt cache no Bedrock**: marcas `cache_control` (convenção Anthropic/OpenRouter) viram `cachePoint`; `prompt_cache: off|explicit|auto` por apelido; até 4 pontos; MidTS manda a marca com `LLM_PROMPT_CACHE=on`
 
 ## Próximos passos (ordem sugerida)
 
@@ -26,7 +27,7 @@
 5. **Application inference profiles do Bedrock por agente** (com tag de custo): custo real por agente no Cost Explorer, além da estimativa.
 6. **Orçamento por time** (soma dos agentes) com alerta antes de estourar.
 7. **Mirante nativo:** o nautilm manda os eventos com a identidade autenticada.
-8. **Structured output** (`response_format: json_schema`) e **prompt caching** automático no Bedrock.
+8. **Structured output** (`response_format: json_schema`) no Bedrock.
 9. **OTel** `gen_ai.*` (spans) além do log; **recarregar o config** sem reiniciar.
 10. **Bedrock Guardrails (PII)** opcional, para o que regex não pega (custo por chamada).
 11. **Livro-caixa em DynamoDB** se o financeiro exigir garantia maior que a do Valkey.

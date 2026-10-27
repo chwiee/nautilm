@@ -280,6 +280,8 @@ td.wrap { white-space: normal; }
       <label>Model id <input name="model" required list="model-hints" placeholder="us.anthropic.claude-sonnet-5-5"></label>
       <label>Max tokens <input name="max_tokens" type="number" min="0" value="0"></label>
       <label>Dimensions <input name="dimensions" type="number" min="0" value="0"></label>
+      <label title="Bedrock prompt caching. Only for models that support it (Claude, Nova).">Prompt cache
+        <select name="prompt_cache"><option value="off">off</option><option value="explicit">explicit (agent's markers)</option><option value="auto">auto (+ system prompt)</option></select></label>
       <fieldset style="grid-column: 1 / -1"><legend>Fallback (in order, chat only, on 429/5xx)</legend><div id="alias-fallback" class="checks"></div></fieldset>
       <div style="grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
         <button type="submit" class="btn-main" id="alias-save">Test and save</button>
@@ -738,7 +740,8 @@ function renderConfig() {
 
   $("alias-table").innerHTML = '<thead><tr><th class="key">Alias</th><th class="key">Type</th><th class="key">Provider · model</th><th>Max tokens</th><th class="key">Fallback</th><th class="key">Source</th><th></th></tr></thead><tbody>' +
     cfg.models.map((m) => "<tr><td class=\"key\"><b>" + esc(m.alias) + "</b></td><td class=\"key\">" + esc(m.type) + "</td><td class=\"key\">" + esc(m.provider) + " · <code>" + esc(m.model) +
-      "</code></td><td>" + (m.max_tokens || "—") + "</td><td class=\"key\">" + esc((m.fallback || []).join(" → ") || "—") + "</td><td class=\"key\">" + srcBadge(m.source) +
+      "</code>" + (m.prompt_cache && m.prompt_cache !== "off" ? ' <span class="src dash">cache: ' + esc(m.prompt_cache) + "</span>" : "") +
+      "</td><td>" + (m.max_tokens || "—") + "</td><td class=\"key\">" + esc((m.fallback || []).join(" → ") || "—") + "</td><td class=\"key\">" + srcBadge(m.source) +
       '</td><td><span class="acts"><button data-mact="edit" data-alias="' + esc(m.alias) + '">Change</button>' +
       (m.source === "dashboard" ? '<button class="danger" data-mact="delete" data-alias="' + esc(m.alias) + '">Delete</button>' : "") +
       (m.source === "override" ? '<button data-mact="delete" data-alias="' + esc(m.alias) + '">Restore file</button>' : "") +
@@ -929,7 +932,7 @@ function openAliasForm(m, provider) {
   f.alias.readOnly = !!m;
   if (m) {
     f.alias.value = m.alias; f.type.value = m.type; f.provider.value = m.provider; f.model.value = m.model;
-    f.max_tokens.value = m.max_tokens || 0; f.dimensions.value = m.dimensions || 0;
+    f.max_tokens.value = m.max_tokens || 0; f.dimensions.value = m.dimensions || 0; f.prompt_cache.value = m.prompt_cache || "off";
   } else if (provider) f.provider.value = provider;
   const fb = (m && m.fallback) || [];
   $("alias-fallback").innerHTML = cfg.models.filter((x) => x.type === "chat" && (!m || x.alias !== m.alias)).map((x) =>
@@ -954,7 +957,7 @@ $("alias-table").addEventListener("click", async (e) => {
 $("alias-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target, btn = $("alias-save");
-  const def = { type: f.type.value, provider: f.provider.value, model: f.model.value.trim(), max_tokens: +f.max_tokens.value || 0, dimensions: +f.dimensions.value || 0,
+  const def = { type: f.type.value, provider: f.provider.value, model: f.model.value.trim(), max_tokens: +f.max_tokens.value || 0, dimensions: +f.dimensions.value || 0, prompt_cache: f.prompt_cache.value === "off" ? "" : f.prompt_cache.value,
     fallback: f.type.value === "chat" ? [...$("alias-fallback").querySelectorAll("input:checked")].map((i) => i.value) : [] };
   btn.disabled = true; btn.textContent = "Testing…";
   try {

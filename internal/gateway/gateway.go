@@ -306,7 +306,7 @@ func (g *Gateway) callChain(ctx context.Context, st *live.State, b billing, req 
 		used := served{alias: alias, provider: m.Provider, model: m.Model}
 		t0 := time.Now()
 		resp, err := st.Providers[m.Provider].Chat(ctx, provider.Call{Model: m.Model, Request: req, Raw: raw,
-			DefaultMaxTokens: m.MaxTokens, Header: h, ID: callID, Alias: req.Model})
+			DefaultMaxTokens: m.MaxTokens, Header: h, ID: callID, Alias: req.Model, PromptCache: m.PromptCache})
 		status := http.StatusOK
 		var u *openai.Usage
 		if err != nil {

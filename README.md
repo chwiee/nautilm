@@ -394,6 +394,50 @@ O config é lido em **modo estrito**: chave desconhecida (erro de digitação ou
 chave antiga do pedagio, como `cotas:`) impede a subida com a mensagem dizendo
 qual chave usar.
 
+## Prompt cache (Bedrock)
+
+Agentes que repetem um prefixo grande em toda chamada (instruções, guias,
+definição de tools: o **CAG** do MidTS) economizam com o prompt cache do
+Bedrock: a parte em cache custa ~10% na leitura e responde mais rápido.
+
+O agente marca **onde termina o trecho estável** com a convenção da
+Anthropic/OpenRouter/LiteLLM, no formato OpenAI:
+
+```json
+{"role": "system", "content": [
+  {"type": "text", "text": "<guias longos>", "cache_control": {"type": "ephemeral"}}
+]}
+```
+
+(também vale `"cache_control"` na mensagem inteira). O apelido decide o que
+fazer com a marca:
+
+| `prompt_cache` | O que acontece no Bedrock |
+|---|---|
+| `off` (padrão) | marcas ignoradas: nada muda |
+| `explicit` | cada marca vira um bloco `cachePoint` no mesmo lugar (system, user, assistant ou depois de um tool result) |
+| `auto` | como `explicit`; se o agente não mandou marca, põe um `cachePoint` no fim do system (cobre tools + system) |
+
+```yaml
+models:
+  midts-smart: {provider: bedrock-us-east-2, model: us.anthropic.claude-sonnet-5-5, prompt_cache: explicit}
+```
+
+- **Ligue só em modelos com prompt cache** (Claude, Nova). Os demais recusam
+  o `cachePoint`. Cuidado com `fallback` para um modelo sem suporte.
+- No máximo **4** pontos por requisição (limite do Bedrock): marcas a mais são
+  descartadas, mantendo as **primeiras** (o prefixo mais estável).
+- Prefixo menor que o mínimo do modelo (ex.: ~1.024 tokens no Claude) não é
+  cacheado, mas a chamada funciona.
+- Custo: leitura e escrita do cache vêm separadas do Bedrock e são cobradas
+  com `cache_read`/`cache_write` do `pricing` (sem eles, cobradas como input:
+  conservador). A resposta traz `usage.prompt_tokens_details.cached_tokens`.
+- A marca passa pelo **mascaramento** junto com o texto (a parte marcada
+  também é mascarada).
+- Provedores OpenAI-compatíveis recebem o JSON do agente como veio, com as
+  marcas (OpenRouter e LiteLLM as usam).
+- Também dá para escolher na aba Config (campo *Prompt cache* do apelido).
+
 ## Streaming
 
 Com `"stream": true` o nautilm repassa os tokens **conforme o modelo gera**

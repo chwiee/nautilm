@@ -86,6 +86,11 @@ type Model struct {
 	MaxTokens int `yaml:"max_tokens"`
 	// Fallback: aliases tried, in order, if this one fails with 429/5xx.
 	Fallback []string `yaml:"fallback"`
+	// PromptCache (Bedrock): "off" (default) ignores the agents' cache
+	// markers, "explicit" honors them, "auto" also caches the system prompt
+	// when no marker came. Turn it on only for models with prompt caching
+	// (Claude, Nova): others reject the cachePoint.
+	PromptCache string `yaml:"prompt_cache"`
 }
 
 type Auth struct {
@@ -271,6 +276,9 @@ func (c *Config) Validate() error {
 		}
 		// Embeddings NEVER have a fallback: each model builds vectors in a
 		// different space. Mixing two in one index silently breaks search.
+		if !slices.Contains([]string{"", "off", "explicit", "auto"}, m.PromptCache) {
+			errs = append(errs, fmt.Errorf("model %s: prompt_cache must be off, explicit or auto", alias))
+		}
 		if m.Type == "embedding" && len(m.Fallback) > 0 {
 			errs = append(errs, fmt.Errorf("model %s: an embedding cannot have a fallback (vectors from different models do not mix)", alias))
 		}

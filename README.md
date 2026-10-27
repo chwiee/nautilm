@@ -5,6 +5,12 @@ nautilm tem credencial nos provedores (Bedrock hoje, API da Anthropic ou
 outros amanhã), e ele mantém o **livro-caixa** de quem usou qual modelo,
 onde, quantos tokens e quanto custou.
 
+> **Vai implantar ou migrar um agente?** Comece por
+> [docs/IMPLANTACAO-EMPRESA.md](docs/IMPLANTACAO-EMPRESA.md) (runbook por fases, com os pontos que
+> exigem uma pessoa) e [docs/MIGRACAO-AGENTES.md](docs/MIGRACAO-AGENTES.md). **IAs** (Claude Code,
+> Kiro, Copilot…): o contexto completo do projeto está em [.claude/CLAUDE.md](.claude/CLAUDE.md)
+> (e [AGENTS.md](AGENTS.md)).
+
 ```
  k8s ─────┐                          ┌─► Bedrock (Claude, Nova…)     ← só o nautilm tem IAM
  mid ─────┤                          ├─► API da Anthropic / outros
@@ -609,4 +615,5 @@ make test-valkey  # integração com Valkey (cotas e livro-caixa); VALKEY_URL=re
 NAUTILM_TEST_DATABASE_URL=postgres://... go test ./internal/store/   # mesmo teste contra Postgres real
 make lint         # go vet ./...
 make docker       # imagem distroless nonroot
+go run ./cmd/nautilm -check -config config.yaml   # valida o config e sai
 ```

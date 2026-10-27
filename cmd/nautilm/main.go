@@ -33,7 +33,18 @@ import (
 
 func main() {
 	path := flag.String("config", envOr("NAUTILM_CONFIG", "config.yaml"), "config file")
+	check := flag.Bool("check", false, "validate the config file (strict mode, same rules as the startup) and exit")
 	flag.Parse()
+
+	if *check {
+		// No network, no database: only the file. ${VAR}s must be set (any value).
+		if _, err := config.Load(*path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("config ok:", *path)
+		return
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(*path, log); err != nil {

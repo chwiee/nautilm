@@ -53,6 +53,16 @@ type Config struct {
 	// CheckTenant rejects tokens whose "tid" is not TenantID (default true;
 	// the local mock sets the same tid, so it stays on there too).
 	CheckTenant bool
+	// Groups returns the group map IN EFFECT (config file + Config tab).
+	// Nil = AdminGroups/ViewerGroups above.
+	Groups func() (admin, viewer []string)
+}
+
+func (e *Entra) groups() (admin, viewer []string) {
+	if e.cfg.Groups != nil {
+		return e.cfg.Groups()
+	}
+	return e.cfg.AdminGroups, e.cfg.ViewerGroups
 }
 
 type Entra struct {
@@ -180,12 +190,14 @@ func (e *Entra) Callback(w http.ResponseWriter, r *http.Request) {
 			"ask the Entra admin to set the app's groups claim to \"Groups assigned to the application\"")
 		return
 	}
-	roles := RolesFor(cl.Groups, e.cfg.AdminGroups, e.cfg.ViewerGroups)
+	admin, viewer := e.groups()
+	roles := RolesFor(cl.Groups, admin, viewer)
 	if len(roles) == 0 {
 		e.denied(ctx, w, who, "not in an allowed group", "ask the nautilm team to add you to the viewer or admin group")
 		return
 	}
-	u := store.User{ID: cl.OID, Name: firstNonEmpty(cl.Name, who), Email: firstNonEmpty(cl.Email, cl.PreferredUsername), Roles: roles}
+	u := store.User{ID: cl.OID, Name: firstNonEmpty(cl.Name, who), Email: firstNonEmpty(cl.Email, cl.PreferredUsername),
+		Roles: roles, Groups: cl.Groups}
 	cookie, err := e.store.CreateSession(ctx, u, e.cfg.SessionTTL)
 	if err != nil {
 		e.log.Error("creating session", "error", err)
@@ -241,6 +253,16 @@ func (e *Entra) SessionFrom(r *http.Request) (store.Session, bool) {
 			e.log.Error("reading session", "error", err)
 		}
 		return store.Session{}, false
+	}
+	// Roles follow the group map in effect, not the one at sign-in time:
+	// removing a group in the Config tab takes effect on the next request.
+	// (Sessions from before groups were stored keep their roles until they expire.)
+	if len(s.Groups) > 0 {
+		admin, viewer := e.groups()
+		s.Roles = RolesFor(s.Groups, admin, viewer)
+		if len(s.Roles) == 0 {
+			return store.Session{}, false
+		}
 	}
 	return s, true
 }

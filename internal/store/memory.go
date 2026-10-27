@@ -11,13 +11,14 @@ import (
 // Memory is an in-process Store for unit tests. Not for production: it
 // forgets everything when the process stops.
 type Memory struct {
-	mu       sync.Mutex
-	nextID   int64
-	tokens   map[int64]*Token
-	byHash   map[string]int64
-	sessions map[string]Session
-	audit    []AuditEntry
-	Now      func() time.Time
+	mu        sync.Mutex
+	nextID    int64
+	tokens    map[int64]*Token
+	byHash    map[string]int64
+	sessions  map[string]Session
+	audit     []AuditEntry
+	revisions []Revision
+	Now       func() time.Time
 }
 
 func NewMemory() *Memory {
@@ -141,6 +142,71 @@ func (m *Memory) ListAudit(_ context.Context, limit int) ([]AuditEntry, error) {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *Memory) SaveRevision(_ context.Context, n NewRevision, actor string) (Revision, error) {
+	if err := n.validate(); err != nil {
+		return Revision{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest int64
+	for _, r := range m.revisions {
+		if r.Kind == n.Kind {
+			latest = r.ID
+		}
+	}
+	if latest != n.Parent {
+		return Revision{}, ErrConflict
+	}
+	r := Revision{ID: int64(len(m.revisions) + 1), Kind: n.Kind, Payload: slices.Clone(n.Payload), Actor: actor,
+		Note: n.Note, CreatedAt: m.Now().UTC()}
+	if n.RollbackOf > 0 {
+		rb := n.RollbackOf
+		r.RollbackOf = &rb
+	}
+	m.revisions = append(m.revisions, r)
+	return r, nil
+}
+
+func (m *Memory) LatestRevisions(context.Context) (map[string]Revision, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]Revision{}
+	for _, r := range m.revisions {
+		out[r.Kind] = r
+	}
+	return out, nil
+}
+
+func (m *Memory) ListRevisions(_ context.Context, kind string, limit int) ([]Revision, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []Revision{}
+	for i := len(m.revisions) - 1; i >= 0; i-- {
+		if m.revisions[i].Kind == kind {
+			out = append(out, m.revisions[i])
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *Memory) GetRevision(_ context.Context, id int64) (Revision, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id <= 0 || int(id) > len(m.revisions) {
+		return Revision{}, ErrNotFound
+	}
+	return m.revisions[id-1], nil
+}
+
+func (m *Memory) LastRevisionID(context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return int64(len(m.revisions)), nil
 }
 
 func (m *Memory) Ping(context.Context) error { return nil }

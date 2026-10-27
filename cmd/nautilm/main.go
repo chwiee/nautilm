@@ -20,11 +20,9 @@ import (
 	"github.com/chwiee/nautilm/internal/auth"
 	"github.com/chwiee/nautilm/internal/config"
 	"github.com/chwiee/nautilm/internal/gateway"
+	"github.com/chwiee/nautilm/internal/live"
 	"github.com/chwiee/nautilm/internal/mask"
 	"github.com/chwiee/nautilm/internal/metrics"
-	"github.com/chwiee/nautilm/internal/provider"
-	"github.com/chwiee/nautilm/internal/provider/bedrock"
-	"github.com/chwiee/nautilm/internal/provider/openaicompat"
 	"github.com/chwiee/nautilm/internal/quota"
 	"github.com/chwiee/nautilm/internal/secrets"
 	"github.com/chwiee/nautilm/internal/store"
@@ -52,7 +50,7 @@ func run(path string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	providers, err := buildProviders(ctx, cfg)
+	providers, err := live.BuildAll(ctx, cfg, live.DefaultBuilder)
 	if err != nil {
 		return err
 	}
@@ -75,13 +73,28 @@ func run(path string, log *slog.Logger) error {
 	}
 
 	gw := gateway.New(cfg, providers, authn, metrics.New(), log)
+	var cfgMgr *live.Manager
 	if st != nil {
 		gw.UseStore(st, stored)
+		// Config tab: providers, aliases, prices and groups changed in the
+		// dashboard, on top of this file. Replicas pick changes up by polling.
+		cfgMgr = &live.Manager{Base: cfg, BaseProviders: providers, Store: st, Secrets: &secrets.AWSReader{},
+			Build: live.DefaultBuilder, Log: log}
+		cfgMgr.Start(ctx)
+		go cfgMgr.Run(ctx)
+		gw.UseConfigManager(cfgMgr)
 	}
 	if e := cfg.Dashboard.Entra; e != nil {
-		gw.UseEntra(webauth.New(webauth.Config{Issuer: e.Issuer(), TenantID: e.TenantID, ClientID: e.ClientID,
+		wc := webauth.Config{Issuer: e.Issuer(), TenantID: e.TenantID, ClientID: e.ClientID,
 			ClientSecret: e.ClientSecret, PublicURL: cfg.Dashboard.PublicURL, AdminGroups: e.AdminGroups,
-			ViewerGroups: e.ViewerGroups, SessionTTL: cfg.Dashboard.SessionTTL, CheckTenant: true}, st, log))
+			ViewerGroups: e.ViewerGroups, SessionTTL: cfg.Dashboard.SessionTTL, CheckTenant: true}
+		if cfgMgr != nil {
+			wc.Groups = func() ([]string, []string) {
+				in := cfgMgr.Current().Cfg.Dashboard.Entra
+				return in.AdminGroups, in.ViewerGroups
+			}
+		}
+		gw.UseEntra(webauth.New(wc, st, log))
 		log.Info("dashboard sign-in", "provider", "entra", "issuer", e.Issuer(), "public_url", cfg.Dashboard.PublicURL,
 			"admin_groups", len(e.AdminGroups), "viewer_groups", len(e.ViewerGroups))
 	}
@@ -139,23 +152,6 @@ func run(path string, log *slog.Logger) error {
 		return err
 	}
 	return nil
-}
-
-func buildProviders(ctx context.Context, cfg *config.Config) (map[string]provider.Provider, error) {
-	out := map[string]provider.Provider{}
-	for name, p := range cfg.Providers {
-		switch p.Type {
-		case "bedrock":
-			b, err := bedrock.New(ctx, bedrock.Config{Region: p.Region})
-			if err != nil {
-				return nil, fmt.Errorf("provider %s: %w", name, err)
-			}
-			out[name] = b
-		case "openai":
-			out[name] = openaicompat.New(openaicompat.Config{BaseURL: p.BaseURL, APIKey: p.APIKey, Timeout: p.Timeout})
-		}
-	}
-	return out, nil
 }
 
 // openDatabase resolves the URL (env or Secrets Manager) and connects, with

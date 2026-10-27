@@ -46,6 +46,31 @@ spec:
   selector: {app: mock-entra}
   ports: [{port: 8080, targetPort: 8080, nodePort: 30096}]
 ---
+# LAB ONLY: Floci emulates AWS (Secrets Manager here), so the Config tab's
+# provider wizard can be tested without an AWS account. It does NOT enforce
+# IAM: AccessDenied is covered by the unit tests, not by this lab.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: floci, namespace: nautilm}
+spec:
+  selector: {matchLabels: {app: floci}}
+  template:
+    metadata: {labels: {app: floci}}
+    spec:
+      enableServiceLinks: false   # FLOCI_PORT=tcp://... would break its config
+      containers:
+        - name: floci
+          image: floci/floci:2.1.0
+          env: [{name: FLOCI_STORAGE_MODE, value: memory}]
+          ports: [{containerPort: 4566}]
+          readinessProbe: {tcpSocket: {port: 4566}, periodSeconds: 2}
+          resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: floci, namespace: nautilm}
+spec: {selector: {app: floci}, ports: [{port: 4566, targetPort: 4566}]}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata: {name: nautilm, namespace: nautilm}
@@ -95,6 +120,10 @@ spec:
           imagePullPolicy: Never
           args: ["-config", "/etc/nautilm/config.yaml"]
           envFrom: [{secretRef: {name: nautilm-secrets}}]
+          env:   # LAB ONLY: the AWS SDK talks to Floci instead of AWS
+            - {name: AWS_ENDPOINT_URL, value: "http://floci.nautilm:4566"}
+            - {name: AWS_ACCESS_KEY_ID, value: test}
+            - {name: AWS_SECRET_ACCESS_KEY, value: test}
           ports: [{name: http, containerPort: 8080}]
           readinessProbe: {httpGet: {path: /healthz, port: http}}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}

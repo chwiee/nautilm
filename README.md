@@ -252,6 +252,84 @@ geradas na hora e ficam só em Secrets do cluster. Abra
 > O Entra simulado ([examples/mock-entra](examples/mock-entra)) deixa qualquer
 > um entrar como qualquer usuário: **só laboratório**, nunca em cluster real.
 
+O laboratório também sobe o **Floci** (AWS emulada) no lugar do Secrets
+Manager, para testar o assistente de provedor sem conta AWS. Para criar uma
+secret nele:
+
+```bash
+kubectl --context kind-nautilm-lab -n nautilm port-forward svc/floci 14566:4566
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test aws --endpoint-url http://localhost:14566 --region us-east-2 \
+  secretsmanager create-secret --name nautilm/providers/ollama-lab \
+  --secret-string '{"api_key":"x","base_url":"http://host.docker.internal:11434/v1"}'
+```
+
+O Floci **não aplica IAM**: o caso "role sem permissão" é coberto pelos testes
+unitários, não pelo laboratório.
+
+## Aba Config (admin)
+
+Admins mudam a config **sem reiniciar** e sem mexer no arquivo. O arquivo
+continua sendo a base: o que vem dele aparece como *config file* e é somente
+leitura na tela; o painel **adiciona ou sobrepõe**.
+
+| Seção | O que dá para fazer | Proteção |
+|---|---|---|
+| **Providers** | adicionar provedor OpenAI-compatível (chave no Secrets Manager) ou Bedrock (outra região), editar, apagar | assistente com teste; não apaga provedor em uso |
+| **Aliases** | criar apelido, trocar o modelo/provedor de um apelido, fallback, max tokens; "Restore file" desfaz a mudança num apelido do arquivo | **teste com chamada real** (≤ 8 tokens) antes de salvar |
+| **Prices** | preço por provedor + modelo, com vigência | com `strict_pricing`, apelido sem preço não salva |
+| **Entra groups** | mapear mais grupos para admin/viewer | grupos do arquivo nunca saem (ninguém fica trancado para fora) |
+| **History** | ver cada revisão (quem, quando, o quê) e **restaurar** | restaurar cria uma revisão nova; o histórico nunca é reescrito |
+
+### Assistente de novo provedor
+
+1. **Provider**: nome e tipo. OpenAI-compatível (OpenRouter, vLLM, LiteLLM,
+   gateway da empresa…) ou Amazon Bedrock (sem secret: usa o role do nautilm).
+2. **Secret**: mostra o JSON e o comando da AWS CLI (lê a chave sem eco).
+   Formato: `{"api_key": "...", "base_url": "https://.../v1"}` (`base_url`
+   opcional se for informado na tela) ou só a chave em texto.
+3. **ARN**: o ARN completo. O nautilm confere o formato, a conta, a região e
+   se o nome está sob `nautilm/providers/`.
+4. **Permission**: dentro do prefixo, o statement único já cobre (aplique uma
+   vez). Fora dele, mostra o statement exato daquela secret (e sugere mover
+   para o prefixo). No Bedrock, mostra o `bedrock:InvokeModel` do modelo.
+5. **Test**: lê a secret com o role do nautilm, confere o formato e chama o
+   provedor (`GET /models`, ou 1 token no Bedrock). Passou tudo = **salva
+   sozinho**. Falhou = diz o passo, o motivo e o que fazer:
+
+| Erro | O que a tela diz |
+|---|---|
+| `AccessDeniedException` | o role não lê a secret + o statement pronto para copiar |
+| KMS negado | a secret usa chave KMS própria: falta `kms:Decrypt` |
+| `ResourceNotFoundException` | conta, região ou sufixo do ARN errados |
+| JSON sem `api_key` | os **nomes** das chaves encontradas (nunca os valores) |
+| 401/403 do provedor | a secret foi lida, mas a chave foi recusada |
+| conexão recusada | `base_url` errada ou sem rota de rede |
+
+O provedor salvo **não recebe tráfego** até um apelido usá-lo. No banco fica só
+o ARN; a chave fica em memória e é relida a cada 10 min (acompanha a rotação
+da secret). Se a leitura falhar depois, só aquele provedor responde 503
+`provider_unavailable` (com fallback, se houver) e a tela mostra ⚠.
+
+### Como as mudanças viram realidade
+
+- Cada salvamento valida a config **inteira** (arquivo + painel) com as
+  mesmas regras da subida. Config inválida não é salva.
+- Cada requisição usa um retrato da config do começo ao fim: uma mudança no
+  meio não mistura duas configs.
+- A réplica que salvou aplica na hora; as outras em até 5 s.
+- Dois admins editando ao mesmo tempo: o segundo recebe 409 ("recarregue"),
+  em vez de desfazer a mudança do outro sem saber.
+- As chamadas de teste vão para o livro-caixa como `nautilm-config-test`
+  (custo visível).
+- Tudo vai para a auditoria (`config.*`), inclusive testes que falharam.
+- Se a subida encontrar uma mudança do painel que ficou inválida (ex.: o
+  arquivo removeu um provedor que um apelido do painel usava), o nautilm sobe
+  **só com o arquivo** e a aba Config mostra o erro em destaque.
+
+**Trade-off**: mudança pelo painel não passa por PR (GitOps). O histórico, a
+restauração e a auditoria compensam; para mudanças estruturais (provedores
+com credencial no env, agentes, cotas), o arquivo continua sendo o caminho.
+
 ## Proteções (ligadas por padrão)
 
 ### Mascaramento de dados sensíveis
@@ -292,6 +370,7 @@ Tokens de entrada + saída por agente, em janelas fixas: **200 mil por minuto** 
 | `GET /auth/login`, `/auth/callback`, `POST /auth/logout`, `GET /auth/me` | login Entra ID e sessão |
 | `GET/POST /v1/admin/tokens`, `POST /v1/admin/tokens/{id}/rotate`, `/{id}/revoke` | tokens de aplicação (**admin**) |
 | `GET /v1/admin/audit`, `/v1/admin/aliases` | auditoria e apelidos (**admin**) |
+| `GET /v1/admin/config`, `POST /v1/admin/config/{arn,providers,models,pricing,groups,rollback}`, `GET /v1/admin/config/history` | aba Config (**admin**) |
 | `GET /metrics` | Prometheus (operação): requests, tokens, custo, duração, TTFT, fallbacks, bloqueios, mascaramentos, registros perdidos |
 | `GET /healthz` | health |
 
@@ -360,6 +439,7 @@ AWS para as chamadas que o código faz: `Converse`, `ConverseStream` e `InvokeMo
 | `ClaudeModelsOnlyViaThatProfile` | as mesmas | ARN do modelo nas 3 regiões do perfil, com condição `bedrock:InferenceProfileArn` | o perfil roteia entre us-east-1/2 e us-west-2; a condição impede chamar o modelo por fora do perfil |
 | `ConverseAuthorized*` | `bedrock:ApplyGuardrail`, `bedrock:InvokeTool`, `bedrock:CallWithBearerToken` | guardrails e system tools da conta | a AWS lista essas ações como parte da autorização do `Converse`; hoje o nautilm não usa guardrails, tools do Bedrock nem API keys do Bedrock |
 | `ReadTheDatabaseConnectionSecret` | `secretsmanager:GetSecretValue` | `secret:nautilm/database-??????` (só esse segredo) | URL do Postgres na subida. Se o segredo usar **chave KMS própria** (CMK), acrescente `kms:Decrypt` nela; com a chave padrão `aws/secretsmanager`, não precisa |
+| `ReadNautilmProviderSecrets` | `secretsmanager:GetSecretValue` | `secret:nautilm/providers/*` | chaves dos provedores adicionados na **aba Config**. Um statement para todos: provedor novo não exige mudar IAM. O prefixo deve ser exclusivo do nautilm |
 
 Não há `bedrock:*` nem `Resource: "*"` nas ações de invocação: **modelo novo =
 acrescentar o ARN dele** (e o preço em `pricing`, e o apelido em `models`).
@@ -463,6 +543,7 @@ internal/webauth/         login Entra ID (OIDC + PKCE), sessão, papéis
 internal/store/           Postgres (tokens, sessões, auditoria) e versão em memória
 internal/secrets/         URL do banco no Secrets Manager
 internal/oidcmock/        Entra simulado (testes e laboratório)
+internal/live/            config em vigor: arquivo + aba Config, recarga, assistente de provedor
 internal/pricing/         catálogo de preços por provedor+modelo com vigência
 internal/usage/           livro-caixa (memória/Valkey) e relatórios (JSON/CSV)
 internal/quota/           cotas (memória/Valkey)

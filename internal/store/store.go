@@ -15,7 +15,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -62,6 +64,31 @@ type User struct {
 	Name  string   `json:"name"`
 	Email string   `json:"email"`
 	Roles []string `json:"roles"` // admin, viewer
+	// Groups are the Entra group object IDs from the ID token. Kept so the
+	// roles can be recomputed when the group map changes.
+	Groups []string `json:"groups"`
+}
+
+// Revision is one saved change of the Config tab (see migrations/0002).
+type Revision struct {
+	ID         int64           `json:"id"`
+	Kind       string          `json:"kind"`    // providers, models, pricing, groups
+	Payload    json.RawMessage `json:"payload"` // the FULL set of that kind
+	Actor      string          `json:"actor"`
+	Note       string          `json:"note"`
+	RollbackOf *int64          `json:"rollback_of,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// NewRevision is a change to save. Parent is the revision id of that kind
+// the admin was looking at (0 = none yet): if someone saved in between, the
+// save fails with ErrConflict instead of silently undoing their change.
+type NewRevision struct {
+	Kind       string
+	Payload    json.RawMessage
+	Note       string
+	Parent     int64
+	RollbackOf int64
 }
 
 // Session is a signed-in dashboard user.
@@ -97,6 +124,14 @@ type Store interface {
 	Audit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
 
+	SaveRevision(ctx context.Context, n NewRevision, actor string) (Revision, error)
+	// LatestRevisions returns the newest revision of each kind.
+	LatestRevisions(ctx context.Context) (map[string]Revision, error)
+	ListRevisions(ctx context.Context, kind string, limit int) ([]Revision, error)
+	GetRevision(ctx context.Context, id int64) (Revision, error)
+	// LastRevisionID is cheap: replicas poll it to notice changes.
+	LastRevisionID(ctx context.Context) (int64, error)
+
 	Ping(ctx context.Context) error
 	Close()
 }
@@ -104,7 +139,21 @@ type Store interface {
 var (
 	ErrNotFound = errors.New("not found")
 	ErrInvalid  = errors.New("invalid")
+	ErrConflict = errors.New("changed by someone else in the meantime: reload and try again")
 )
+
+// RevisionKinds are the parts of the config editable in the dashboard.
+var RevisionKinds = []string{"providers", "models", "pricing", "groups"}
+
+func (n NewRevision) validate() error {
+	if !slices.Contains(RevisionKinds, n.Kind) {
+		return errors.Join(ErrInvalid, errors.New("unknown revision kind "+n.Kind))
+	}
+	if !json.Valid(n.Payload) {
+		return errors.Join(ErrInvalid, errors.New("payload is not valid JSON"))
+	}
+	return nil
+}
 
 // TokenPrefix marks nautilm tokens: easy to spot in a leaked log or a secret scanner.
 const TokenPrefix = "naut_"

@@ -162,15 +162,19 @@ func (p *Postgres) CreateSession(ctx context.Context, u User, ttl time.Duration)
 	if _, err := p.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at < now()`); err != nil {
 		return "", err
 	}
-	_, err := p.pool.Exec(ctx, `INSERT INTO sessions (id_hash, user_id, user_name, user_email, roles, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6)`, hash, u.ID, u.Name, u.Email, u.Roles, p.Now().UTC().Add(ttl))
+	groups := u.Groups
+	if groups == nil {
+		groups = []string{}
+	}
+	_, err := p.pool.Exec(ctx, `INSERT INTO sessions (id_hash, user_id, user_name, user_email, roles, groups, expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`, hash, u.ID, u.Name, u.Email, u.Roles, groups, p.Now().UTC().Add(ttl))
 	return clear, err
 }
 
 func (p *Postgres) GetSession(ctx context.Context, cookie string) (Session, error) {
 	var s Session
-	err := p.pool.QueryRow(ctx, `SELECT user_id, user_name, user_email, roles, expires_at FROM sessions
-		WHERE id_hash = $1 AND expires_at > now()`, Hash(cookie)).Scan(&s.ID, &s.Name, &s.Email, &s.Roles, &s.ExpiresAt)
+	err := p.pool.QueryRow(ctx, `SELECT user_id, user_name, user_email, roles, groups, expires_at FROM sessions
+		WHERE id_hash = $1 AND expires_at > now()`, Hash(cookie)).Scan(&s.ID, &s.Name, &s.Email, &s.Roles, &s.Groups, &s.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, ErrNotFound
 	}
@@ -212,6 +216,99 @@ func (p *Postgres) ListAudit(ctx context.Context, limit int) ([]AuditEntry, erro
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+const revisionCols = `id, kind, payload, actor, note, rollback_of, created_at`
+
+func scanRevision(row pgx.Row) (Revision, error) {
+	var r Revision
+	var payload []byte
+	err := row.Scan(&r.ID, &r.Kind, &payload, &r.Actor, &r.Note, &r.RollbackOf, &r.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r, ErrNotFound
+	}
+	r.Payload = payload
+	return r, err
+}
+
+func (p *Postgres) SaveRevision(ctx context.Context, n NewRevision, actor string) (Revision, error) {
+	if err := n.validate(); err != nil {
+		return Revision{}, err
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return Revision{}, err
+	}
+	defer tx.Rollback(ctx)
+	// One writer per kind at a time (all replicas): the parent check below
+	// cannot race with another save.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7238412, hashtext($1))`, n.Kind); err != nil {
+		return Revision{}, err
+	}
+	var latest int64
+	if err := tx.QueryRow(ctx, `SELECT coalesce(max(id), 0) FROM config_revisions WHERE kind = $1`, n.Kind).Scan(&latest); err != nil {
+		return Revision{}, err
+	}
+	if latest != n.Parent {
+		return Revision{}, ErrConflict
+	}
+	var rb *int64
+	if n.RollbackOf > 0 {
+		rb = &n.RollbackOf
+	}
+	r, err := scanRevision(tx.QueryRow(ctx, `INSERT INTO config_revisions (kind, payload, actor, note, rollback_of)
+		VALUES ($1,$2,$3,$4,$5) RETURNING `+revisionCols, n.Kind, []byte(n.Payload), actor, n.Note, rb))
+	if err != nil {
+		return Revision{}, err
+	}
+	return r, tx.Commit(ctx)
+}
+
+func (p *Postgres) LatestRevisions(ctx context.Context) (map[string]Revision, error) {
+	rows, err := p.pool.Query(ctx, `SELECT DISTINCT ON (kind) `+revisionCols+` FROM config_revisions ORDER BY kind, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Revision{}
+	for rows.Next() {
+		r, err := scanRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[r.Kind] = r
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) ListRevisions(ctx context.Context, kind string, limit int) ([]Revision, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := p.pool.Query(ctx, `SELECT `+revisionCols+` FROM config_revisions WHERE kind = $1 ORDER BY id DESC LIMIT $2`, kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Revision{}
+	for rows.Next() {
+		r, err := scanRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) GetRevision(ctx context.Context, id int64) (Revision, error) {
+	return scanRevision(p.pool.QueryRow(ctx, `SELECT `+revisionCols+` FROM config_revisions WHERE id = $1`, id))
+}
+
+func (p *Postgres) LastRevisionID(ctx context.Context) (int64, error) {
+	var id int64
+	err := p.pool.QueryRow(ctx, `SELECT coalesce(max(id), 0) FROM config_revisions`).Scan(&id)
+	return id, err
 }
 
 func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }

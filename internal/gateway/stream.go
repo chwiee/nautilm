@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chwiee/nautilm/internal/auth"
+	"github.com/chwiee/nautilm/internal/live"
 	"github.com/chwiee/nautilm/internal/pricing"
 	"github.com/chwiee/nautilm/internal/provider"
 	"github.com/chwiee/nautilm/pkg/openai"
@@ -33,14 +34,14 @@ type streamResult struct {
 // opening), we try the next alias as usual. After the first chunk, the HTTP
 // 200 status is already sent: an error becomes a "data: {"error": ...}"
 // event and the stream ends.
-func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id auth.Identity, b billing, req *openai.ChatRequest,
+func (g *Gateway) streamChain(ctx context.Context, st *live.State, w http.ResponseWriter, id auth.Identity, b billing, req *openai.ChatRequest,
 	raw map[string]any, h http.Header, callID string, includeUsage bool, trace string) streamResult {
 
-	chain := g.cfg.Chain(req.Model)
+	chain := st.Cfg.Chain(req.Model)
 	start := time.Now()
 	var res streamResult
 	for i, alias := range chain {
-		m := g.cfg.Models[alias]
+		m := st.Cfg.Models[alias]
 		if i > 0 {
 			g.metrics.Fallback(b.agent, chain[i-1], alias)
 			g.log.Warn("fallback", "agent", id.Agent, "from", chain[i-1], "to", alias, "error", res.err, "stream", true)
@@ -56,12 +57,12 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 		t0 := time.Now()
 		var u *openai.Usage
 		var err error
-		if s, ok := g.providers[m.Provider].(provider.Streamer); ok {
+		if s, ok := st.Providers[m.Provider].(provider.Streamer); ok {
 			res.mode = "real"
 			u, err = s.ChatStream(ctx, call, sw.emit)
 		} else {
 			res.mode = "simulated"
-			u, err = simulate(ctx, g.providers[m.Provider], call, sw.emit)
+			u, err = simulate(ctx, st.Providers[m.Provider], call, sw.emit)
 		}
 
 		status := http.StatusOK
@@ -69,7 +70,7 @@ func (g *Gateway) streamChain(ctx context.Context, w http.ResponseWriter, id aut
 			status = asProviderError(err).Status
 		}
 		// Tokens spent in a stream that broke in the middle are still billed.
-		res.cost = g.record(ctx, b, "chat", used, status, time.Since(t0), u, trace)
+		res.cost = g.record(ctx, st, b, "chat", used, status, time.Since(t0), u, trace)
 		if sw.started {
 			g.metrics.FirstToken(b.agent, alias, m.Model, res.ttft)
 		}

@@ -15,6 +15,7 @@
 - (v0.5) **Custo e divisão da conta**: catálogo de preços por provedor + modelo com vigência (cache read/write, `free`, `strict_pricing`, custo informado pelo provedor vence); livro-caixa diário por agente × chamador × time × centro de custo × provedor × modelo (memória/Valkey, retenção 400 dias, registro perdido vai para o log); `X-Nautilm-On-Behalf-Of` só para quem tem `on_behalf_of`; `/v1/usage` (JSON/CSV) e `/dashboard`
 - (v0.5) Erro `provider_quota_day`: quota diária da conta no provedor, sem retry; permissões documentadas e validadas no IAM Access Analyzer
 - (v0.6) **Login Entra ID** (OIDC + PKCE, grupos admin/viewer, overage negado com dica), **tokens de aplicação pelo painel** (hash, mostrado uma vez, validade, cotas e apelidos próprios, rotação sem downtime, revogação), **auditoria**; PostgreSQL em pod com PVC + backup; URL do banco no Secrets Manager (local: Secret do cluster); laboratório kind com Entra simulado
+- (v0.7) **Aba Config**: provedores (assistente com secret no Secrets Manager e teste em etapas), apelidos com teste real antes de salvar, preços e mapa de grupos do Entra; revisões no Postgres com histórico, restauração e detecção de edição concorrente; recarga sem reiniciar nas réplicas; papéis recalculados a cada requisição
 
 ## Próximos passos (ordem sugerida)
 

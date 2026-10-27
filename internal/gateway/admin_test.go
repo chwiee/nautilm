@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,17 +16,35 @@ import (
 
 	"github.com/chwiee/nautilm/internal/auth"
 	"github.com/chwiee/nautilm/internal/config"
+	"github.com/chwiee/nautilm/internal/live"
 	"github.com/chwiee/nautilm/internal/metrics"
 	"github.com/chwiee/nautilm/internal/oidcmock"
 	"github.com/chwiee/nautilm/internal/provider"
 	"github.com/chwiee/nautilm/internal/store"
 	"github.com/chwiee/nautilm/internal/usage"
 	"github.com/chwiee/nautilm/internal/webauth"
+
+	"github.com/aws/smithy-go"
 )
 
 type adminEnv struct {
-	srv   *httptest.Server
-	store *store.Memory
+	srv     *httptest.Server
+	store   *store.Memory
+	secrets fakeSecrets
+	gw      *Gateway
+}
+
+// fakeSecrets stands in for Secrets Manager: arn → value or error.
+type fakeSecrets map[string]any
+
+func (f fakeSecrets) Read(_ context.Context, arn string) (string, error) {
+	switch v := f[arn].(type) {
+	case string:
+		return v, nil
+	case error:
+		return "", v
+	}
+	return "", &smithy.GenericAPIError{Code: "ResourceNotFoundException", Message: "Secrets Manager can't find the specified secret."}
 }
 
 // setupAdmin: gateway with database (memory), Entra (mock) and stored tokens.
@@ -56,12 +75,21 @@ dashboard:
 	gw := New(cfg, map[string]provider.Provider{"a": &fake{}, "b": &fake{}},
 		auth.Chain{stored, auth.NewTokens(cfg.Auth.Tokens)}, metrics.New(), log)
 	gw.UseStore(st, stored)
+	secrets := fakeSecrets{}
+	mgr := &live.Manager{Base: cfg, BaseProviders: gw.static.Providers, Store: st, Secrets: secrets,
+		Build: live.DefaultBuilder, Log: log, Interval: time.Hour}
+	mgr.Start(context.Background())
+	gw.UseConfigManager(mgr)
 	gw.UseEntra(webauth.New(webauth.Config{Issuer: mock.Issuer(), TenantID: "t1", ClientID: "app", ClientSecret: "s",
-		PublicURL: public, AdminGroups: []string{"grp-admin"}, ViewerGroups: []string{"grp-viewer"}, SessionTTL: time.Hour, CheckTenant: true}, st, log))
+		PublicURL: public, AdminGroups: []string{"grp-admin"}, ViewerGroups: []string{"grp-viewer"}, SessionTTL: time.Hour, CheckTenant: true,
+		Groups: func() ([]string, []string) {
+			e := mgr.Current().Cfg.Dashboard.Entra
+			return e.AdminGroups, e.ViewerGroups
+		}}, st, log))
 	srv.Config.Handler = gw.Handler()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return adminEnv{srv: srv, store: st}
+	return adminEnv{srv: srv, store: st, secrets: secrets, gw: gw}
 }
 
 // browser signs in as the mock user and returns a client with the session cookie.

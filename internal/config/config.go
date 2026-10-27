@@ -147,6 +147,10 @@ type Dashboard struct {
 	SessionTTL time.Duration `yaml:"session_ttl"`
 	// Entra: sign-in with Microsoft Entra ID. Needs "database".
 	Entra *Entra `yaml:"entra"`
+	// ProviderSecretPrefix: name prefix of the Secrets Manager secrets of
+	// providers added in the Config tab (default "nautilm/providers/"). The
+	// nautilm role gets ONE statement for the whole prefix.
+	ProviderSecretPrefix string `yaml:"provider_secret_prefix"`
 }
 
 // Entra configures the sign-in with Microsoft Entra ID (OIDC).

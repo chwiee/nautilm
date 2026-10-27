@@ -42,8 +42,9 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	g.reportMasked(w, id, g.maskEmbed(req.Input))
 
-	m, exists := g.cfg.Models[req.Model]
-	allowed := g.allowed(id)
+	st := g.snap()
+	m, exists := st.Cfg.Models[req.Model]
+	allowed := g.allowed(st, id)
 	switch {
 	case !exists:
 		g.reject(w, id, http.StatusNotFound, "unknown_model", fmt.Sprintf("model %q does not exist in nautilm; use an alias", req.Model))
@@ -60,7 +61,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	if !g.checkQuota(w, r, id, lim) {
 		return
 	}
-	emb, ok := g.providers[m.Provider].(provider.Embedder)
+	emb, ok := st.Providers[m.Provider].(provider.Embedder)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "unsupported", fmt.Sprintf("provider %q does not generate embeddings", m.Provider))
 		return
@@ -79,7 +80,7 @@ func (g *Gateway) embeddings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status = asProviderError(err).Status
 	}
-	cost := g.record(r.Context(), bill, "embedding", used, status, time.Since(start), u, trace)
+	cost := g.record(r.Context(), st, bill, "embedding", used, status, time.Since(start), u, trace)
 	in, _ := tokenCounts(u)
 	g.spendQuota(r.Context(), id, lim, in)
 	if err != nil {

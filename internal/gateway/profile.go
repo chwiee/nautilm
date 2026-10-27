@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/chwiee/nautilm/internal/auth"
+	"github.com/chwiee/nautilm/internal/live"
 )
 
 // An agent's permissions come from one of two places:
@@ -13,20 +14,20 @@ import (
 // These helpers hide the difference from the rest of the gateway.
 
 // allowed returns the aliases the caller may use (sorted).
-func (g *Gateway) allowed(id auth.Identity) []string {
+func (g *Gateway) allowed(st *live.State, id auth.Identity) []string {
 	if id.Profile == nil {
-		return g.cfg.Allowed(id.Agent)
+		return st.Cfg.Allowed(id.Agent)
 	}
 	var out []string
 	for _, m := range id.Profile.Models {
 		if m == "*" {
 			out = out[:0]
-			for alias := range g.cfg.Models {
+			for alias := range st.Cfg.Models {
 				out = append(out, alias)
 			}
 			break
 		}
-		if _, ok := g.cfg.Models[m]; ok && !slices.Contains(out, m) {
+		if _, ok := st.Cfg.Models[m]; ok && !slices.Contains(out, m) {
 			out = append(out, m) // an alias removed from the config later is ignored
 		}
 	}

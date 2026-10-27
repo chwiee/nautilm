@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -101,6 +102,66 @@ func conformance(t *testing.T, s Store) {
 	if len(a) != 2 || a[0].Action != "token.revoke" || a[1].Details["id"] == nil {
 		t.Errorf("audit: %+v", a)
 	}
+
+	// Sessions keep the Entra groups (roles are recomputed from them).
+	gc, _ := s.CreateSession(ctx, User{ID: "oid-3", Email: "g@corp", Roles: []string{"viewer"}, Groups: []string{"g1", "g2"}}, time.Hour)
+	if gs, err := s.GetSession(ctx, gc); err != nil || len(gs.Groups) != 2 || gs.Groups[1] != "g2" {
+		t.Errorf("session groups: %+v %v", gs, err)
+	}
+
+	revisions(t, s)
+}
+
+func revisions(t *testing.T, s Store) {
+	ctx := context.Background()
+	if id, err := s.LastRevisionID(ctx); err != nil || id != 0 {
+		t.Fatalf("empty: %d %v", id, err)
+	}
+	if _, err := s.SaveRevision(ctx, NewRevision{Kind: "nope", Payload: []byte(`{}`)}, "ana"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("unknown kind: %v", err)
+	}
+	if _, err := s.SaveRevision(ctx, NewRevision{Kind: "models", Payload: []byte(`{`)}, "ana"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("bad json: %v", err)
+	}
+	m1, err := s.SaveRevision(ctx, NewRevision{Kind: "models", Payload: []byte(`{"a":1}`), Note: "first"}, "ana")
+	if err != nil || m1.ID == 0 || m1.Actor != "ana" {
+		t.Fatalf("save: %+v %v", m1, err)
+	}
+	// Someone saves without having seen m1 (parent 0): conflict.
+	if _, err := s.SaveRevision(ctx, NewRevision{Kind: "models", Payload: []byte(`{"b":1}`)}, "bob"); !errors.Is(err, ErrConflict) {
+		t.Errorf("stale parent must conflict: %v", err)
+	}
+	m2, err := s.SaveRevision(ctx, NewRevision{Kind: "models", Payload: []byte(`{"a":2}`), Parent: m1.ID}, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1, _ := s.SaveRevision(ctx, NewRevision{Kind: "groups", Payload: []byte(`{"admin":[]}`)}, "ana")
+	rb, err := s.SaveRevision(ctx, NewRevision{Kind: "models", Payload: m1.Payload, Parent: m2.ID, RollbackOf: m1.ID}, "ana")
+	if err != nil || rb.RollbackOf == nil || *rb.RollbackOf != m1.ID {
+		t.Fatalf("rollback: %+v %v", rb, err)
+	}
+	latest, _ := s.LatestRevisions(ctx)
+	if len(latest) != 2 || latest["models"].ID != rb.ID || latest["groups"].ID != g1.ID {
+		t.Errorf("latest: %+v", latest)
+	}
+	var p map[string]int
+	json.Unmarshal(latest["models"].Payload, &p)
+	if p["a"] != 1 {
+		t.Errorf("rolled back payload: %s", latest["models"].Payload)
+	}
+	list, _ := s.ListRevisions(ctx, "models", 10)
+	if len(list) != 3 || list[0].ID != rb.ID {
+		t.Errorf("history: %+v", list)
+	}
+	if got, err := s.GetRevision(ctx, m2.ID); err != nil || got.Actor != "bob" {
+		t.Errorf("get: %+v %v", got, err)
+	}
+	if _, err := s.GetRevision(ctx, 9999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing revision: %v", err)
+	}
+	if id, _ := s.LastRevisionID(ctx); id != rb.ID {
+		t.Errorf("last id %d, want %d", id, rb.ID)
+	}
 }
 
 func TestMemory(t *testing.T) { conformance(t, NewMemory()) }
@@ -119,8 +180,8 @@ func TestPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	for _, tbl := range []string{"api_tokens", "sessions", "audit_log"} {
-		p.pool.Exec(ctx, "TRUNCATE "+tbl)
+	for _, tbl := range []string{"api_tokens", "sessions", "audit_log", "config_revisions"} {
+		p.pool.Exec(ctx, "TRUNCATE "+tbl+" RESTART IDENTITY")
 	}
 	conformance(t, p)
 

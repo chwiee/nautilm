@@ -38,6 +38,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/tokens/{id}/rotate", g.adminOnly(g.rotateToken))
 	mux.HandleFunc("GET /v1/admin/audit", g.adminOnly(g.listAudit))
 	mux.HandleFunc("GET /v1/admin/aliases", g.adminOnly(g.listAliases))
+	g.configRoutes(mux)
 }
 
 // session returns the signed-in user (Entra), if any.
@@ -127,7 +128,7 @@ func (g *Gateway) createToken(w http.ResponseWriter, r *http.Request, s store.Se
 		return
 	}
 	for _, m := range req.Models {
-		if _, ok := g.cfg.Models[m]; !ok && m != "*" {
+		if _, ok := g.snap().Cfg.Models[m]; !ok && m != "*" {
 			writeError(w, http.StatusBadRequest, "unknown_model", fmt.Sprintf("alias %q does not exist", m))
 			return
 		}
@@ -236,7 +237,7 @@ func (g *Gateway) listAliases(w http.ResponseWriter, _ *http.Request, _ store.Se
 		Alias, Type, Provider, Model string
 	}
 	var out []alias
-	for name, m := range g.cfg.Models {
+	for name, m := range g.snap().Cfg.Models {
 		out = append(out, alias{name, m.Type, m.Provider, m.Model})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })

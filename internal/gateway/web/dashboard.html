@@ -112,6 +112,43 @@ button.danger:hover { border-color: rgba(208,59,59,.7); }
 #token-box { display: grid; gap: 8px; }
 #token-box[hidden], #entra-box[hidden] { display: none; }
 @media (max-width: 700px) { .tabs { margin-left: 0; order: 3; width: 100%; } }
+/* config tab */
+.card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.card-head .spacer { flex: 1; }
+pre.code { background: var(--surface-2); border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; font-family: var(--mono);
+  font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; color: var(--ink-1); }
+.copyable { position: relative; }
+.copyable button { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 12px; }
+.dialog.wide { width: min(680px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+.wiz-steps { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); }
+.wiz-steps span.on { color: var(--ink-1); box-shadow: inset 0 -2px 0 var(--data); }
+.wiz-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.btn-main { background: var(--data); border-color: var(--data); color: #fff; font-weight: 600; }
+.btn-main:hover { background: var(--data); filter: brightness(1.1); }
+.btn-main:disabled { opacity: .5; cursor: wait; }
+.radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.radio-cards label { border: 1px solid var(--hair); border-radius: 8px; padding: 10px; display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.radio-cards label:has(input:checked) { border-color: var(--data); background: var(--surface-2); }
+.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.checklist li { display: grid; grid-template-columns: 22px 1fr; gap: 4px 8px; }
+.checklist .mark { font-weight: 700; }
+.checklist .ok .mark { color: var(--data); }
+.checklist .bad .mark { color: var(--warn); }
+.checklist .sub { grid-column: 2; color: var(--ink-2); font-size: 13px; }
+.src { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--hair); color: var(--ink-3); }
+.src.dash { color: var(--ink-1); border-color: rgba(57,135,229,.6); }
+.src.over { color: var(--warn); border-color: rgba(250,178,25,.5); }
+.inline-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 12px; align-items: end; margin-top: 12px;
+  padding-top: 12px; border-top: 1px solid var(--hair); }
+.inline-form[hidden] { display: none; }
+.inline-form label { display: grid; gap: 4px; color: var(--ink-2); font-size: 13px; }
+.inline-form input, .inline-form select { width: 100%; }
+.result { border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+.result.ok { border-color: rgba(57,135,229,.6); }
+.result.bad { border-color: rgba(250,178,25,.5); }
+td .acts { display: inline-flex; gap: 6px; }
+td.wrap { white-space: normal; }
 </style>
 </head>
 <body>
@@ -123,6 +160,7 @@ button.danger:hover { border-color: rgba(208,59,59,.7); }
     <button data-view="usage" class="on">Usage</button>
     <button data-view="tokens" class="admin-only" hidden>Tokens</button>
     <button data-view="audit" class="admin-only" hidden>Audit</button>
+    <button data-view="config" class="admin-only" hidden>Config</button>
   </nav>
   <span class="right">
     <span class="muted" id="status"></span>
@@ -214,6 +252,102 @@ button.danger:hover { border-color: rgba(208,59,59,.7); }
     <div class="tablewrap"><table id="audit-table"></table></div>
   </section>
 </main>
+
+<main id="view-config" hidden>
+  <div id="cfg-status"></div>
+
+  <section class="card" aria-labelledby="prov-title">
+    <div class="card-head">
+      <h2 id="prov-title">Providers <span class="muted">· where the models run</span></h2>
+      <span class="spacer"></span>
+      <button class="btn-main" id="add-provider">+ Add provider</button>
+    </div>
+    <div class="tablewrap"><table id="prov-table"></table></div>
+    <p class="note">Providers of the config file are read-only here. A provider added here takes no traffic until an alias uses it.</p>
+  </section>
+
+  <section class="card" aria-labelledby="alias-title">
+    <div class="card-head">
+      <h2 id="alias-title">Aliases <span class="muted">· what agents ask for</span></h2>
+      <span class="spacer"></span>
+      <button id="new-alias">+ New alias</button>
+    </div>
+    <div class="tablewrap"><table id="alias-table"></table></div>
+    <form id="alias-form" class="inline-form" hidden>
+      <label>Alias <input name="alias" required maxlength="128" pattern="[A-Za-z0-9._:-]+" placeholder="smart"></label>
+      <label>Type <select name="type"><option value="chat">chat</option><option value="embedding">embedding</option></select></label>
+      <label>Provider <select name="provider" id="alias-provider"></select></label>
+      <label>Model id <input name="model" required list="model-hints" placeholder="us.anthropic.claude-sonnet-5-5"></label>
+      <label>Max tokens <input name="max_tokens" type="number" min="0" value="0"></label>
+      <label>Dimensions <input name="dimensions" type="number" min="0" value="0"></label>
+      <fieldset style="grid-column: 1 / -1"><legend>Fallback (in order, chat only, on 429/5xx)</legend><div id="alias-fallback" class="checks"></div></fieldset>
+      <div style="grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+        <button type="submit" class="btn-main" id="alias-save">Test and save</button>
+        <button type="button" id="alias-cancel">Cancel</button>
+        <span class="muted">A real call (≤ 8 tokens) is made first; nothing is saved if the model does not answer.</span>
+      </div>
+      <div id="alias-result" style="grid-column: 1 / -1"></div>
+    </form>
+    <datalist id="model-hints"></datalist>
+  </section>
+
+  <section class="card" aria-labelledby="price-title">
+    <div class="card-head">
+      <h2 id="price-title">Prices <span class="muted">· USD per 1M tokens</span></h2>
+    </div>
+    <div id="price-missing"></div>
+    <div class="tablewrap"><table id="price-table"></table></div>
+    <form id="price-form" class="inline-form">
+      <label>Provider <select name="provider" id="price-provider"></select></label>
+      <label>Model <input name="model" required placeholder="model id or *"></label>
+      <label>Input <input name="input" type="number" min="0" step="any" value="0"></label>
+      <label>Output <input name="output" type="number" min="0" step="any" value="0"></label>
+      <label>Cache read <input name="cache_read" type="number" min="0" step="any" value="0"></label>
+      <label>Cache write <input name="cache_write" type="number" min="0" step="any" value="0"></label>
+      <label>Effective from <input name="effective_from" type="date"></label>
+      <label class="check" style="display:flex"><input type="checkbox" name="free"> free</label>
+      <button type="submit">Add price</button>
+    </form>
+    <p class="note">Check the provider's price list for your Region. A newer <i>effective from</i> replaces the old price from that day on; past usage keeps the price it had.</p>
+  </section>
+
+  <section class="card" aria-labelledby="group-title">
+    <div class="card-head">
+      <h2 id="group-title">Entra groups <span class="muted">· who may sign in</span></h2>
+    </div>
+    <div class="tablewrap"><table id="group-table"></table></div>
+    <form id="group-form" class="inline-form">
+      <label>Group object ID <input name="id" required placeholder="00000000-0000-0000-0000-000000000000"></label>
+      <label>Label <input name="name" placeholder="Platform team"></label>
+      <label>Role <select name="role"><option value="viewer">viewer (usage)</option><option value="admin">admin (everything)</option></select></label>
+      <button type="submit">Add group</button>
+    </form>
+    <p class="note" id="my-groups"></p>
+    <p class="note">People are added to or removed from the groups in Entra ID. Groups of the config file are always kept, so nobody gets locked out. Removing a group here cuts its members' sessions on the next request.</p>
+  </section>
+
+  <section class="card" aria-labelledby="hist-title">
+    <div class="card-head">
+      <h2 id="hist-title">History</h2>
+      <span class="spacer"></span>
+      <label class="ctl">Show
+        <select id="hist-kind"><option value="models">aliases</option><option value="providers">providers</option><option value="pricing">prices</option><option value="groups">groups</option></select>
+      </label>
+    </div>
+    <div class="tablewrap"><table id="hist-table"></table></div>
+    <p class="note">Restoring creates a new revision (history is never rewritten). It is validated but not re-tested.</p>
+  </section>
+</main>
+
+<div class="overlay" id="wizard" role="dialog" aria-modal="true" aria-labelledby="wiz-title">
+  <div class="dialog wide">
+    <div class="name" id="wiz-title">Add provider</div>
+    <div class="wiz-steps" id="wiz-steps"></div>
+    <div id="wiz-body"></div>
+    <div class="err" id="wiz-err"></div>
+    <div class="wiz-actions" id="wiz-actions"></div>
+  </div>
+</div>
 
 <div id="tip" role="tooltip"></div>
 
@@ -456,10 +590,11 @@ $("logout").addEventListener("click", async () => {
 
 // ---------- views ----------
 function show(view) {
-  for (const v of ["usage", "tokens", "audit"]) $("view-" + v).hidden = v !== view;
+  for (const v of ["usage", "tokens", "audit", "config"]) $("view-" + v).hidden = v !== view;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
-  if (view === "tokens") loadTokens();
+  if (view === "tokens") { $("alias-list").innerHTML = ""; loadTokens(); }
   if (view === "audit") loadAudit();
+  if (view === "config") loadConfig();
 }
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
 
@@ -554,6 +689,366 @@ async function loadAudit() {
       (rows || '<tr><td class="key" colspan="5">Nothing yet.</td></tr>') + "</tbody>";
   } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
 }
+
+// ---------- config (admins) ----------
+let cfg = null; // last GET /v1/admin/config
+
+// call returns {status, body} without throwing on 4xx: the Config tab shows
+// test results (422), validation errors (400) and conflicts (409) inline.
+async function call(path, body) {
+  const r = await fetch(path, { method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (r.status === 401) { askToken("Your session expired."); throw new Error("unauthorized"); }
+  let data = {};
+  try { data = await r.json(); } catch {}
+  return { status: r.status, body: data, error: data.error ? data.error.message : "" };
+}
+const parent = (kind) => (cfg && cfg.revisions && cfg.revisions[kind]) || 0;
+const srcBadge = (s) => s === "config" ? '<span class="src">config file</span>' : s === "override" ? '<span class="src over">changed here</span>' : '<span class="src dash">added here</span>';
+const copyBlock = (text) => '<div class="copyable"><pre class="code">' + esc(text) + '</pre><button type="button" data-copy="' + esc(text) + '">Copy</button></div>';
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-copy]");
+  if (!b) return;
+  try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; } catch { b.textContent = "Select it"; }
+  setTimeout(() => (b.textContent = "Copy"), 1500);
+});
+
+async function loadConfig() {
+  try {
+    const r = await call("/v1/admin/config");
+    if (r.status !== 200) { $("cfg-status").innerHTML = '<div class="banner"><b>⚠</b> ' + esc(r.error || "HTTP " + r.status) + "</div>"; return; }
+    cfg = r.body;
+    renderConfig();
+    loadHistory();
+  } catch (e) { if (e.message !== "unauthorized") $("status").textContent = "error: " + e.message; }
+}
+
+function renderConfig() {
+  const st = cfg.status;
+  $("cfg-status").innerHTML = st.load_error
+    ? '<div class="banner"><b>⚠ Dashboard changes NOT applied</b> (running with the config file only): ' + esc(st.load_error) + "</div>"
+    : '<p class="note">In effect: revision ' + st.revision + " · loaded " + fmtDate(st.loaded_at) + " · other replicas follow within seconds.</p>";
+
+  $("prov-table").innerHTML = '<thead><tr><th class="key">Name</th><th class="key">Type</th><th class="key">Where</th><th class="key">Secret</th><th class="key">Used by</th><th class="key">Source</th><th></th></tr></thead><tbody>' +
+    cfg.providers.map((p) => "<tr><td class=\"key\"><b>" + esc(p.name) + "</b>" + (p.broken ? '<br><span class="badge warn" title="' + esc(p.broken) + '">⚠ secret unreadable</span>' : "") +
+      "</td><td class=\"key\">" + esc(p.type) + "</td><td class=\"key\">" + esc(p.region || p.base_url || "—") + "</td><td class=\"key wrap\"><small>" + esc(p.secret_arn || "—") +
+      "</small></td><td class=\"key\">" + esc(p.used_by.join(", ") || "—") + "</td><td class=\"key\">" + srcBadge(p.source) + "</td><td>" +
+      (p.source === "dashboard" ? '<span class="acts"><button data-pact="edit" data-name="' + esc(p.name) + '">Edit</button><button class="danger" data-pact="delete" data-name="' + esc(p.name) + '">Delete</button></span>' : "") +
+      "</td></tr>").join("") + "</tbody>";
+
+  $("alias-table").innerHTML = '<thead><tr><th class="key">Alias</th><th class="key">Type</th><th class="key">Provider · model</th><th>Max tokens</th><th class="key">Fallback</th><th class="key">Source</th><th></th></tr></thead><tbody>' +
+    cfg.models.map((m) => "<tr><td class=\"key\"><b>" + esc(m.alias) + "</b></td><td class=\"key\">" + esc(m.type) + "</td><td class=\"key\">" + esc(m.provider) + " · <code>" + esc(m.model) +
+      "</code></td><td>" + (m.max_tokens || "—") + "</td><td class=\"key\">" + esc((m.fallback || []).join(" → ") || "—") + "</td><td class=\"key\">" + srcBadge(m.source) +
+      '</td><td><span class="acts"><button data-mact="edit" data-alias="' + esc(m.alias) + '">Change</button>' +
+      (m.source === "dashboard" ? '<button class="danger" data-mact="delete" data-alias="' + esc(m.alias) + '">Delete</button>' : "") +
+      (m.source === "override" ? '<button data-mact="delete" data-alias="' + esc(m.alias) + '">Restore file</button>' : "") +
+      "</span></td></tr>").join("") + "</tbody>";
+
+  const provOpts = cfg.providers.map((p) => '<option value="' + esc(p.name) + '">' + esc(p.name) + "</option>").join("");
+  $("alias-provider").innerHTML = provOpts;
+  $("price-provider").innerHTML = provOpts;
+
+  $("price-missing").innerHTML = cfg.missing_prices && cfg.missing_prices.length
+    ? '<div class="banner"><b>⚠ No price</b> for ' + esc(cfg.missing_prices.join(", ")) + ": their calls are recorded as UNPRICED (cost unknown)." +
+      (cfg.strict_pricing ? " With strict_pricing, an alias for a model without a price cannot be saved." : "") + "</div>"
+    : "";
+  const dashPrices = cfg.pricing.filter((p) => p.source === "dashboard");
+  $("price-table").innerHTML = '<thead><tr><th class="key">Provider</th><th class="key">Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Effective from</th><th class="key">Source</th><th></th></tr></thead><tbody>' +
+    cfg.pricing.map((p) => "<tr><td class=\"key\">" + esc(p.provider) + "</td><td class=\"key\"><code>" + esc(p.model) + "</code></td><td>" + (p.free ? "free" : p.input) + "</td><td>" + (p.free ? "—" : p.output) +
+      "</td><td>" + (p.cache_read || "—") + "</td><td>" + (p.cache_write || "—") + "</td><td>" + esc(p.effective_from || "always") + "</td><td class=\"key\">" + srcBadge(p.source) + "</td><td>" +
+      (p.source === "dashboard" ? '<button class="danger" data-price="' + dashPrices.indexOf(p) + '">Remove</button>' : "") + "</td></tr>").join("") + "</tbody>";
+
+  const groupRows = [];
+  for (const role of ["admin", "viewer"]) for (const g of cfg.groups[role]) groupRows.push({ role, ...g });
+  const dashGroups = groupRows.filter((g) => g.source === "dashboard");
+  $("group-table").innerHTML = '<thead><tr><th class="key">Role</th><th class="key">Group object ID</th><th class="key">Label</th><th class="key">Source</th><th></th></tr></thead><tbody>' +
+    groupRows.map((g) => "<tr><td class=\"key\"><b>" + g.role + "</b></td><td class=\"key\"><code>" + esc(g.id) + "</code></td><td class=\"key\">" + esc(g.name || "—") + "</td><td class=\"key\">" +
+      srcBadge(g.source) + "</td><td>" + (g.source === "dashboard" ? '<button class="danger" data-group="' + dashGroups.indexOf(g) + '">Remove</button>' : "") + "</td></tr>").join("") + "</tbody>";
+  $("my-groups").innerHTML = cfg.my_groups && cfg.my_groups.length ? "Your own groups (from your sign-in): " + cfg.my_groups.map((g) => "<code>" + esc(g) + "</code>").join(", ") : "";
+}
+
+// ---- providers: the wizard ----
+const wiz = { step: 0, steps: [], data: {}, arn: null, result: null, replace: false };
+function openWizard(existing) {
+  wiz.replace = !!existing;
+  wiz.data = existing ? { name: existing.name, type: existing.type, region: existing.region || "", base_url: existing.base_url === "(from the secret)" ? "" : (existing.base_url || ""),
+    secret_arn: existing.secret_arn || "", nokey: existing.type === "openai" && !existing.secret_arn, test_model: "" }
+    : { name: "", type: "openai", region: "us-east-2", base_url: "", secret_arn: "", nokey: false, test_model: "" };
+  wiz.step = 0; wiz.arn = null; wiz.result = null;
+  $("wiz-title").textContent = existing ? "Edit provider " + existing.name : "Add provider";
+  $("wizard").classList.add("show");
+  renderWizard();
+}
+function closeWizard() { $("wizard").classList.remove("show"); }
+function wizSteps() {
+  const d = wiz.data;
+  if (d.type === "bedrock") return ["Provider", "Permission", "Test"];
+  if (d.nokey) return ["Provider", "Test"];
+  return ["Provider", "Secret", "ARN", "Permission", "Test"];
+}
+function secretName() { return (cfg.secret_prefix || "nautilm/providers/") + (wiz.data.name || "<name>"); }
+function secretJSON() {
+  return JSON.stringify(wiz.data.base_url ? { api_key: "<paste the provider API key>" } : { api_key: "<paste the provider API key>", base_url: "https://api.example.com/v1" }, null, 2);
+}
+function renderWizard() {
+  const steps = wizSteps(), name = steps[wiz.step], d = wiz.data;
+  $("wiz-steps").innerHTML = steps.map((s, i) => '<span class="' + (i === wiz.step ? "on" : "") + '">' + (i + 1) + ". " + s + "</span>").join(" ");
+  $("wiz-err").textContent = "";
+  let body = "", actions = "";
+  const back = wiz.step > 0 ? '<button type="button" data-w="back">Back</button>' : '<button type="button" data-w="close">Cancel</button>';
+  if (name === "Provider") {
+    body = '<div class="form-grid">' +
+      '<label>Name <input id="w-name" maxlength="40" placeholder="anthropic" value="' + esc(d.name) + '"' + (wiz.replace ? " disabled" : "") + '><small class="muted">lowercase, numbers and -; shows in logs and the ledger</small></label>' +
+      '<div class="span2 radio-cards">' +
+      '<label><input type="radio" name="w-type" value="openai"' + (d.type === "openai" ? " checked" : "") + '><span><b>OpenAI-compatible API</b><br><small class="muted">API key in Secrets Manager (OpenRouter, vLLM, LiteLLM, a company gateway…)</small></span></label>' +
+      '<label><input type="radio" name="w-type" value="bedrock"' + (d.type === "bedrock" ? " checked" : "") + '><span><b>Amazon Bedrock</b><br><small class="muted">no secret: the nautilm IAM role calls it (another Region, for example)</small></span></label></div>' +
+      (d.type === "bedrock"
+        ? '<label>Region <input id="w-region" value="' + esc(d.region) + '" placeholder="us-east-2"></label>' +
+          '<label>Model id to test <input id="w-test-model" value="' + esc(d.test_model) + '" placeholder="amazon.nova-lite-v1:0"><small class="muted">a 1-token call proves access and quota</small></label>'
+        : '<label class="span2">Base URL <input id="w-base" value="' + esc(d.base_url) + '" placeholder="https://openrouter.ai/api/v1"><small class="muted">up to /v1; leave empty to put it inside the secret</small></label>' +
+          '<label class="check span2"><input type="checkbox" id="w-nokey"' + (d.nokey ? " checked" : "") + "> No API key (internal endpoint without authentication)</label>") +
+      "</div>";
+    actions = back + '<button type="button" class="btn-main" data-w="next">Next</button>';
+  } else if (name === "Secret") {
+    body = "<p>Create the secret in <b>AWS Secrets Manager</b>, in the same account as nautilm. Only the key goes there: nautilm stores just the ARN.</p>" +
+      "<p class=\"muted\">Secret value (JSON):</p>" + copyBlock(secretJSON()) +
+      "<p class=\"muted\">Or with the AWS CLI (the value is read without echo, so it stays out of the shell history):</p>" +
+      copyBlock("read -rs KEY && aws secretsmanager create-secret --region <region> \\\n  --name " + secretName() + " \\\n  --tags Key=app,Value=nautilm \\\n  --secret-string \"{\\\"api_key\\\":\\\"$KEY\\\"" +
+        (d.base_url ? "" : ",\\\"base_url\\\":\\\"https://api.example.com/v1\\\"") + "}\"; unset KEY") +
+      '<p class="note">Name it under <code>' + esc(cfg.secret_prefix) + "</code>: one IAM statement then covers every provider.</p>";
+    actions = back + '<button type="button" class="btn-main" data-w="next">I created it · Next</button>';
+  } else if (name === "ARN") {
+    body = '<div class="form-grid"><label class="span2">Full secret ARN <input id="w-arn" value="' + esc(d.secret_arn) +
+      '" placeholder="arn:aws:secretsmanager:us-east-2:123456789012:secret:' + esc(secretName()) + '-AbC123"><small class="muted">copy it from the secret page in the console (it ends with -XXXXXX)</small></label></div>';
+    actions = back + '<button type="button" class="btn-main" data-w="arn">Next</button>';
+  } else if (name === "Permission") {
+    if (d.type === "bedrock") {
+      body = "<p>The nautilm IAM role must be allowed to invoke this model in <b>" + esc(d.region) + "</b>:</p>" +
+        copyBlock(JSON.stringify({ Sid: "InvokeNewBedrockModel", Effect: "Allow", Action: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+          Resource: "arn:aws:bedrock:" + d.region + "::foundation-model/" + (d.test_model || "<model-id>") }, null, 2)) +
+        '<p class="note">An inference profile (us. / global.) also needs the profile ARN; see "Permissões necessárias" in the README. The model must be enabled and have quota in that Region.</p>';
+    } else {
+      const a = wiz.arn;
+      body = a.matches_prefix
+        ? "<p>✓ The secret is under <code>" + esc(a.prefix) + "</code>. If the nautilm role already has the prefix statement, <b>nothing to do</b>. Otherwise add it once:</p>" + copyBlock(a.policy_prefix)
+        : "<p>The secret is <b>outside</b> <code>" + esc(a.prefix) + "</code>: the nautilm IAM role needs access to it:</p>" + copyBlock(a.policy_exact) +
+          '<p class="muted">Better: recreate it under the prefix and apply this one statement for every provider:</p>' + copyBlock(a.policy_prefix);
+      body += '<p class="note">' + esc(a.kms_note) + " Account " + esc(a.account) + " · Region " + esc(a.region) + (a.partial ? " · ⚠ partial ARN: prefer the full one" : "") + "</p>";
+    }
+    body += '<p class="muted">IAM changes may take a few seconds to apply. The test reads the secret and calls the provider; if everything passes, the provider is saved.</p>';
+    actions = back + '<button type="button" class="btn-main" data-w="test">Test and save</button>';
+  } else if (name === "Test") {
+    const r = wiz.result;
+    if (!r) {
+      body = '<p class="muted">Nothing tested yet.</p>';
+      actions = back + '<button type="button" class="btn-main" data-w="test">Test and save</button>';
+    } else {
+      const labels = { definition: "Definition", arn: "Secret ARN", read_secret: "Read the secret (nautilm role)", format: "Secret format", provider: "Provider accepts the credentials" };
+      body = '<ul class="checklist">' + r.test.steps.map((s) => '<li class="' + (s.ok ? "ok" : "bad") + '"><span class="mark">' + (s.ok ? "✓" : "✗") + "</span><span>" + esc(labels[s.name] || s.name) + "</span>" +
+        (s.detail ? '<span class="sub">' + esc(s.detail) + "</span>" : "") + (s.hint ? '<span class="sub"><b>What to do:</b> ' + esc(s.hint) + "</span>" : "") +
+        (s.policy ? '<span class="sub">' + copyBlock(s.policy) + "</span>" : "") + "</li>").join("") + "</ul>";
+      if (r.saved) {
+        body += '<div class="result ok"><b>Saved</b> (revision ' + r.revision.id + "). It takes no traffic yet: create an alias that uses <b>" + esc(d.name) + "</b>." +
+          (r.test.models && r.test.models.length ? '<br><small class="muted">Models it lists: ' + esc(r.test.models.slice(0, 30).join(", ")) + (r.test.models.length > 30 ? "…" : "") + "</small>" : "") + "</div>";
+        actions = '<button type="button" data-w="close">Close</button><button type="button" class="btn-main" data-w="alias">Create an alias for it</button>';
+      } else {
+        body += '<div class="result bad">' + esc(r.error || "Not saved: fix the failing step and test again.") + "</div>";
+        actions = back + '<button type="button" class="btn-main" data-w="test">Test again</button>';
+      }
+    }
+  }
+  $("wiz-body").innerHTML = body;
+  $("wiz-actions").innerHTML = actions;
+  $("wiz-body").querySelectorAll('input[name="w-type"]').forEach((i) => i.addEventListener("change", () => { readWizard(); d.type = i.value; renderWizard(); }));
+  const nk = $("w-nokey");
+  if (nk) nk.addEventListener("change", () => { readWizard(); renderWizard(); });
+}
+function readWizard() {
+  const d = wiz.data, v = (id) => ($(id) ? $(id).value.trim() : null);
+  if (v("w-name") !== null && !wiz.replace) d.name = v("w-name");
+  if (v("w-region") !== null) d.region = v("w-region");
+  if (v("w-test-model") !== null) d.test_model = v("w-test-model");
+  if (v("w-base") !== null) d.base_url = v("w-base");
+  if ($("w-nokey")) d.nokey = $("w-nokey").checked;
+  if (v("w-arn") !== null) d.secret_arn = v("w-arn");
+}
+$("wiz-actions").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-w]");
+  if (!b) return;
+  readWizard();
+  const d = wiz.data, act = b.dataset.w;
+  const err = (m) => ($("wiz-err").textContent = m);
+  if (act === "close") { closeWizard(); return; }
+  if (act === "back") { wiz.step--; renderWizard(); return; }
+  if (act === "alias") { closeWizard(); openAliasForm(null, d.name); return; }
+  if (act === "next") {
+    if (wizSteps()[wiz.step] === "Provider") {
+      if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(d.name)) return err("Name: 2 to 40 characters, lowercase letters, numbers and -.");
+      if (!wiz.replace && cfg.providers.some((p) => p.name === d.name)) return err("A provider with this name already exists.");
+      if (d.type === "bedrock" && (!d.region || !d.test_model)) return err("Region and a model id to test are required.");
+      if (d.type === "openai" && d.nokey && !d.base_url) return err("Without a secret, the base URL is required.");
+    }
+    wiz.step++; renderWizard(); return;
+  }
+  if (act === "arn") {
+    const r = await call("/v1/admin/config/arn", { arn: d.secret_arn });
+    if (!r.body.valid) return err(r.body.error || r.error || "invalid ARN");
+    wiz.arn = r.body; wiz.step++; renderWizard(); return;
+  }
+  if (act === "test") {
+    b.disabled = true; b.textContent = "Testing…";
+    const def = { type: d.type };
+    if (d.type === "bedrock") def.region = d.region;
+    else { if (d.base_url) def.base_url = d.base_url; if (!d.nokey) def.secret_arn = d.secret_arn; }
+    try {
+      const r = await call("/v1/admin/config/providers", { name: d.name, def, test_model: d.test_model, parent: parent("providers"), replace: wiz.replace });
+      wiz.result = r.body.test ? r.body : { test: { steps: [] }, saved: false, error: r.error || "HTTP " + r.status };
+      wiz.step = wizSteps().length - 1;
+      renderWizard();
+      if (r.body.saved) loadConfig();
+    } catch (e2) { b.disabled = false; err(e2.message); }
+  }
+});
+$("add-provider").addEventListener("click", () => openWizard(null));
+$("prov-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-pact]");
+  if (!b) return;
+  const p = cfg.providers.find((x) => x.name === b.dataset.name);
+  if (b.dataset.pact === "edit") { openWizard(p); return; }
+  if (!confirm("Delete provider " + p.name + "? (only possible when no alias uses it)")) return;
+  const r = await call("/v1/admin/config/providers/" + encodeURIComponent(p.name) + "/delete", { parent: parent("providers") });
+  if (r.status !== 200) alert(r.error); else loadConfig();
+});
+
+// ---- aliases ----
+function openAliasForm(m, provider) {
+  const f = $("alias-form");
+  f.reset();
+  f.hidden = false;
+  $("alias-result").innerHTML = "";
+  f.alias.readOnly = !!m;
+  if (m) {
+    f.alias.value = m.alias; f.type.value = m.type; f.provider.value = m.provider; f.model.value = m.model;
+    f.max_tokens.value = m.max_tokens || 0; f.dimensions.value = m.dimensions || 0;
+  } else if (provider) f.provider.value = provider;
+  const fb = (m && m.fallback) || [];
+  $("alias-fallback").innerHTML = cfg.models.filter((x) => x.type === "chat" && (!m || x.alias !== m.alias)).map((x) =>
+    '<label class="check"><input type="checkbox" value="' + esc(x.alias) + '"' + (fb.includes(x.alias) ? " checked" : "") + "> " + esc(x.alias) + "</label>").join("") || '<span class="muted">no other chat alias</span>';
+  const hints = (wiz.result && wiz.result.test && wiz.result.test.models) || [];
+  $("model-hints").innerHTML = hints.map((h) => '<option value="' + esc(h) + '">').join("");
+  f.scrollIntoView({ behavior: "smooth", block: "center" });
+  (m ? f.model : f.alias).focus();
+}
+$("new-alias").addEventListener("click", () => openAliasForm(null));
+$("alias-cancel").addEventListener("click", () => { $("alias-form").hidden = true; });
+$("alias-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-mact]");
+  if (!b) return;
+  const m = cfg.models.find((x) => x.alias === b.dataset.alias);
+  if (b.dataset.mact === "edit") { openAliasForm(m); return; }
+  const msg = m.source === "override" ? "Restore " + m.alias + " to the config file definition?" : "Delete alias " + m.alias + "? Agents asking for it get 404.";
+  if (!confirm(msg)) return;
+  const r = await call("/v1/admin/config/models/" + encodeURIComponent(m.alias) + "/delete", { parent: parent("models") });
+  if (r.status !== 200) alert(r.error); else loadConfig();
+});
+$("alias-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, btn = $("alias-save");
+  const def = { type: f.type.value, provider: f.provider.value, model: f.model.value.trim(), max_tokens: +f.max_tokens.value || 0, dimensions: +f.dimensions.value || 0,
+    fallback: f.type.value === "chat" ? [...$("alias-fallback").querySelectorAll("input:checked")].map((i) => i.value) : [] };
+  btn.disabled = true; btn.textContent = "Testing…";
+  try {
+    const r = await call("/v1/admin/config/models", { alias: f.alias.value.trim(), def, parent: parent("models") });
+    const t = r.body.test;
+    if (r.body.saved) {
+      $("alias-result").innerHTML = '<div class="result ok"><b>✓ Saved</b> (revision ' + r.body.revision.id + ") · answered in " + t.latency_ms + " ms" +
+        (t.reply ? ' · reply "' + esc(t.reply.slice(0, 60)) + '"' : "") + (t.dims ? " · " + t.dims + " dimensions" : "") + " · " + t.tokens_in + " in / " + t.tokens_out + " out" +
+        (t.priced ? " · $" + t.cost_usd.toFixed(6) : " · ⚠ no price") + ". Agents see it now; other replicas within seconds.</div>";
+      await loadConfig();
+      $("alias-form").hidden = false;
+    } else if (t) {
+      $("alias-result").innerHTML = '<div class="result bad"><b>✗ Not saved: the model did not answer</b><br>' + esc(t.error || "") + (t.code ? " <code>" + esc(t.code) + "</code>" : "") + "</div>";
+    } else {
+      const hint = /strict_pricing/.test(r.error) ? "<br><b>What to do:</b> add a price for this provider/model in the Prices section below (or mark it free), then test again." : "";
+      $("alias-result").innerHTML = '<div class="result bad"><b>✗ Not saved</b><br>' + esc(r.error || "HTTP " + r.status) + hint + "</div>";
+    }
+  } catch (err) { $("alias-result").innerHTML = '<div class="result bad">' + esc(err.message) + "</div>"; }
+  btn.disabled = false; btn.textContent = "Test and save";
+});
+
+// ---- prices ----
+async function savePrices(entries) {
+  const r = await call("/v1/admin/config/pricing", { entries, parent: parent("pricing") });
+  if (r.status !== 200) { alert(r.error); return false; }
+  await loadConfig();
+  return true;
+}
+const dashOnly = (list) => list.filter((p) => p.source === "dashboard").map(({ source, ...p }) => p);
+$("price-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const p = { provider: f.provider.value, model: f.model.value.trim(), input: +f.input.value, output: +f.output.value, cache_read: +f.cache_read.value,
+    cache_write: +f.cache_write.value, free: f.free.checked, effective_from: f.effective_from.value };
+  if (await savePrices([...dashOnly(cfg.pricing), p])) f.reset();
+});
+$("price-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-price]");
+  if (!b) return;
+  const list = dashOnly(cfg.pricing);
+  list.splice(+b.dataset.price, 1);
+  if (confirm("Remove this price? Calls after the change use the remaining entries.")) savePrices(list);
+});
+
+// ---- groups ----
+function dashGroups() {
+  const out = { admin: [], viewer: [] };
+  for (const role of ["admin", "viewer"]) out[role] = cfg.groups[role].filter((g) => g.source === "dashboard").map(({ id, name }) => ({ id, name }));
+  return out;
+}
+async function saveGroups(g) {
+  const r = await call("/v1/admin/config/groups", { admin: g.admin, viewer: g.viewer, parent: parent("groups") });
+  if (r.status !== 200) { alert(r.error); return false; }
+  await loadConfig();
+  return true;
+}
+$("group-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, g = dashGroups();
+  g[f.role.value].push({ id: f.id.value.trim(), name: f.name.value.trim() });
+  if (await saveGroups(g)) f.reset();
+});
+$("group-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-group]");
+  if (!b) return;
+  const rows = [];
+  for (const role of ["admin", "viewer"]) for (const g of cfg.groups[role]) if (g.source === "dashboard") rows.push({ role, id: g.id });
+  const victim = rows[+b.dataset.group];
+  if (!confirm("Remove group " + victim.id + " (" + victim.role + ")? Its members lose access on their next request.")) return;
+  const g = dashGroups();
+  g[victim.role] = g[victim.role].filter((x) => x.id !== victim.id);
+  saveGroups(g);
+});
+
+// ---- history ----
+async function loadHistory() {
+  const kind = $("hist-kind").value;
+  const r = await call("/v1/admin/config/history?kind=" + kind + "&limit=30");
+  if (r.status !== 200) return;
+  const cur = r.body.current;
+  $("hist-table").innerHTML = '<thead><tr><th>Revision</th><th>When</th><th class="key">Who</th><th class="key">Change</th><th class="key">Content</th><th></th></tr></thead><tbody>' +
+    (r.body.revisions.map((v) => "<tr><td>" + v.id + (v.id === cur ? ' <span class="badge ok">in effect</span>' : "") + "</td><td>" + fmtDate(v.created_at) + "</td><td class=\"key\">" + esc(v.actor) +
+      "</td><td class=\"key\">" + esc(v.note) + (v.rollback_of ? ' <small class="muted">(restored ' + v.rollback_of + ")</small>" : "") + '</td><td class="key wrap"><small class="muted">' +
+      esc(JSON.stringify(v.payload).slice(0, 220)) + "</small></td><td>" + (v.id !== cur ? '<button data-rev="' + v.id + '">Restore</button>' : "") + "</td></tr>").join("") ||
+      '<tr><td class="key" colspan="6">No changes made in the dashboard yet: only the config file is in effect.</td></tr>') + "</tbody>";
+}
+$("hist-kind").addEventListener("change", loadHistory);
+$("hist-table").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-rev]");
+  if (!b || !confirm("Restore revision " + b.dataset.rev + "? A new revision is created with that content.")) return;
+  const kind = $("hist-kind").value;
+  const r = await call("/v1/admin/config/rollback", { revision_id: +b.dataset.rev, parent: parent(kind) });
+  if (r.status !== 200) alert(r.error); else loadConfig();
+});
 
 function setPreset(p) {
   const [f, t] = preset(p);

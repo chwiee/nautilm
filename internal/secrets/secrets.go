@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -66,11 +67,50 @@ func DatabaseURL(ctx context.Context, url, arn, jsonKey string, api GetSecretVal
 	return value, nil
 }
 
+// AWSReader reads secrets with the pod's own AWS credentials (Pod Identity),
+// one client per Region (taken from the ARN). AWS_ENDPOINT_URL works too, so
+// a local emulator can stand in for Secrets Manager in the lab.
+type AWSReader struct {
+	mu      sync.Mutex
+	clients map[string]GetSecretValueAPI
+}
+
+// Read returns the secret's text.
+func (a *AWSReader) Read(ctx context.Context, arn string) (string, error) {
+	region, err := regionOf(arn)
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	api, ok := a.clients[region]
+	if !ok {
+		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+		if err != nil {
+			a.mu.Unlock()
+			return "", fmt.Errorf("aws credentials: %w", err)
+		}
+		api = secretsmanager.NewFromConfig(cfg)
+		if a.clients == nil {
+			a.clients = map[string]GetSecretValueAPI{}
+		}
+		a.clients[region] = api
+	}
+	a.mu.Unlock()
+	out, err := api.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(arn)})
+	if err != nil {
+		return "", err // kept as is: the wizard explains the AWS error code
+	}
+	if out.SecretString == nil {
+		return "", fmt.Errorf("secret %s has no text value (binary secrets are not supported)", arn)
+	}
+	return *out.SecretString, nil
+}
+
 // regionOf extracts the Region from arn:aws:secretsmanager:<region>:<account>:secret:<name>.
 func regionOf(arn string) (string, error) {
 	parts := strings.Split(arn, ":")
 	if len(parts) < 7 || parts[2] != "secretsmanager" || parts[3] == "" {
-		return "", fmt.Errorf("database.aws_secret_arn %q is not a Secrets Manager ARN", arn)
+		return "", fmt.Errorf("%q is not a Secrets Manager ARN", arn)
 	}
 	return parts[3], nil
 }
